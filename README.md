@@ -111,6 +111,8 @@ python scripts/export_tables.py   # 既存 candidates.json からレポートを
 | `reports/missing_slots.csv` | 採用論文がまだ無い枠（3か国 × 6カテゴリ × 2本） |
 | `reports/duplicates.csv` | 重複と判定された候補 |
 | `pdfs/{country}/...` | OA PDF（取得できた場合のみ） |
+| `organized_pdfs/{country}/...` | 整理済み PDF のコピー（`organize_pdfs.py`、後述） |
+| `reports/rename_log.csv` | PDF 整理の実行ログ（`organize_pdfs.py`） |
 
 > 生成ファイルと PDF バイナリは `.gitignore` 済み。実行のたびに再生成される。
 
@@ -194,6 +196,90 @@ python scripts/export_tables.py   # 既存 candidates.json からレポートを
 - ダウンロードは **OA PDF URL がある候補のみ**。出版社サイトのスクレイピングは行わない。
 - 保存形式: `pdfs/{country}/{slot}_{short_title}.pdf`
 - ファイル名にスペース・記号・日本語・長すぎるタイトルは使わない（ASCII スラグ化）。
+
+## PDF のファイル名整理 (`scripts/organize_pdfs.py`)
+
+download 済み PDF を、研究用の分類ルールに基づいた分かりやすいファイル名へ整理する。
+**元の PDF は消さず、`organized_pdfs/` 配下に安全のためコピー**する。
+
+入力は `data/candidates.csv`（無ければ `reports/candidate_table.csv`）。
+列名が多少違っても落ちないよう存在確認しながら読む。
+
+### カテゴリ番号ルール
+
+| 番号 | カテゴリ |
+|------|----------|
+| 1 | Stereotypes / Ageism |
+| 2 | Work Values / Work Ethic |
+| 3 | Knowledge Transfer / Mentoring |
+| 4 | Communication / Psychological Safety |
+| 5 | Change Adaptation / Technology Adoption |
+| 6 | Status Quo Bias / Resistance to Change |
+
+### ファイル名ルール
+
+```text
+{country}_{category_number}-{sequence}_{short_title}.pdf
+```
+
+例:
+
+```text
+organized_pdfs/Vietnam/Vietnam_1-1_ageism_workplace.pdf
+organized_pdfs/Vietnam/Vietnam_1-2_generational_stereotype.pdf
+organized_pdfs/Vietnam/Vietnam_4-1_employee_voice_power_distance.pdf
+```
+
+- `sequence` は **同じ国・同じカテゴリ内で 1 から連番**。別カテゴリはそれぞれ 1 から。
+- `short_title` は title から生成: 小文字化 / ASCII 化 / 英数字とアンダースコアのみ /
+  空白・記号は `_` / 連続 `_` は 1 つ / 50 文字以内 / 先頭末尾の `_` は削除。
+  - 例: `"Employee Voice and Power Distance in Vietnam"`
+    → `employee_voice_and_power_distance_in_vietnam`
+
+### 対象にする PDF
+
+次をすべて満たすものだけを対象にする:
+
+- `local_pdf_path` が空でない
+- ファイルが実際に存在する
+- `screening_status` が `rejected` / `duplicate` / `exclude_country_mismatch` ではない
+
+`adopted` / `strong_candidate` を優先して若い連番を割り当てる。`candidate` も対象に含む。
+
+### 安全ルール
+
+1. 元の PDF は削除しない（コピー方式）
+2. 既存ファイルを上書きしない
+3. 同名ファイルがある場合は `_dup1`, `_dup2` … を付ける
+4. `--dry-run` で実行前に確認できる
+5. 実行ログを `reports/rename_log.csv` に出力する
+   （列: `country,category,category_number,sequence,title,source_path,new_path,status,note`、
+   status は `copied` / `dry_run` / `skipped_no_pdf` / `skipped_missing_file` /
+   `skipped_rejected` / `duplicate_filename_adjusted` / `error`）
+
+### 使い方
+
+```bash
+# dry-run（コピーせず、何をするかだけログ出力）
+python scripts/organize_pdfs.py --country Vietnam --dry-run
+
+# 実際にコピー整理
+python scripts/organize_pdfs.py --country Vietnam
+
+# 3か国すべてを整理
+python scripts/organize_pdfs.py --all-countries
+```
+
+PowerShell でも同様:
+
+```powershell
+python .\scripts\organize_pdfs.py --country Vietnam --dry-run
+python .\scripts\organize_pdfs.py --country Vietnam
+python .\scripts\organize_pdfs.py --all-countries
+```
+
+> **元の PDF (`pdfs/...`) は削除されません。** `organized_pdfs/` にコピーが作られるだけです。
+> まずは `--dry-run` で `reports/rename_log.csv` を確認してから本実行することを推奨します。
 
 ## 重要な方針
 
