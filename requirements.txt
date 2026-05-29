@@ -6,3 +6,9 @@ PyYAML>=6.0
 
 # Fuzzy title matching for deduplication (pure-python, no native deps)
 rapidfuzz>=3.0.0
+
+# PDF テキスト抽出 (KH Coder 前処理 preprocess_pdfs_for_khcoder.py)
+# 抽出は pymupdf を優先し、pdfplumber / pypdf にフォールバックする。
+pymupdf>=1.23.0
+pdfplumber>=0.10.0
+pypdf>=4.0.0

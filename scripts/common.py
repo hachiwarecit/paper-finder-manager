@@ -18,6 +18,7 @@ ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT / "data"
 PDF_DIR = ROOT / "pdfs"
 ORGANIZED_PDF_DIR = ROOT / "organized_pdfs"
+KHCODER_READY_DIR = ROOT / "khcoder_ready"
 REPORTS_DIR = ROOT / "reports"
 RULES_DIR = ROOT / "rules"
 

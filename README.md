@@ -113,6 +113,8 @@ python scripts/export_tables.py   # 既存 candidates.json からレポートを
 | `pdfs/{country}/...` | OA PDF（取得できた場合のみ） |
 | `organized_pdfs/{country}/...` | 整理済み PDF のコピー（`organize_pdfs.py`、後述） |
 | `reports/rename_log.csv` | PDF 整理の実行ログ（`organize_pdfs.py`） |
+| `khcoder_ready/{country}/{paper_id}/...` | KH Coder 用に前処理したテキスト一式（`preprocess_pdfs_for_khcoder.py`、後述） |
+| `reports/khcoder_preprocess_log.csv` | KH Coder 前処理のまとめログ |
 
 > 生成ファイルと PDF バイナリは `.gitignore` 済み。実行のたびに再生成される。
 
@@ -280,6 +282,86 @@ python .\scripts\organize_pdfs.py --all-countries
 
 > **元の PDF (`pdfs/...`) は削除されません。** `organized_pdfs/` にコピーが作られるだけです。
 > まずは `--dry-run` で `reports/rename_log.csv` を確認してから本実行することを推奨します。
+
+## KH Coder 用前処理 (`scripts/preprocess_pdfs_for_khcoder.py`)
+
+`organized_pdfs/` に整理済みの PDF からテキストを抽出し、卒業研究の前処理ルールに基づいて
+KH Coder に投入できる `khcoder_cleaned.txt` を生成する。
+PDF 抽出は **pymupdf を優先**し、`pdfplumber` → `pypdf` にフォールバックする。
+
+### 入出力
+
+入力: `organized_pdfs/{country}/*.pdf`
+出力: PDF ごとに次のフォルダを作る。
+
+```text
+khcoder_ready/
+  Vietnam/
+    Vietnam_4-1_employee_voice_power_distance/
+      original.pdf          # 元PDFのコピー
+      extracted_raw.txt     # 抽出した生テキスト
+      khcoder_cleaned.txt   # 整形済み（KH Coder 投入用）
+      cleaning_notes.txt    # 残した/削除したセクション・警告・語数
+      processing_log.txt    # 処理ログ
+```
+
+まとめ: `reports/khcoder_preprocess_log.csv`
+（列: `country,pdf_file,category_number,category_name,raw_text_path,cleaned_text_path,notes_path,status,word_count_raw,word_count_cleaned,warnings`、
+status は `processed` / `skipped_no_text` / `ocr_required` / `error`）。
+
+カテゴリ番号はファイル名から読み取る（例 `Vietnam_4-1_...` → country=Vietnam,
+category_number=4, category_name=Communication / Psychological Safety）。
+
+### 前処理ルール（要約）
+
+**残す**: Abstract / Introduction / Literature Review / Theoretical Background /
+Background / Findings / Results の質的説明 / Discussion / Conclusion / Summary /
+Policy Recommendation / Limitations / インタビュー引用・参加者の語り・自由記述・ケース記述。
+
+**Methods は最小限のみ残す**: 対象国・対象組織・対象者・研究方法の最小説明・
+インタビュー/質的研究である旨。統計的な記述（Cronbach's α、p値、係数、t値、SEM/PLS-SEM の数値表）は削除。
+
+**削除する**: References / Bibliography / Appendix / Acknowledgements / Funding /
+Author Contributions / Conflict of Interest / Ethics / Data availability /
+Informed consent / Copyright / Table of Contents / 著者所属 / メールアドレス /
+DOI・URL だけの行 / ページ番号 / 統計表・回帰表 / **References 以降の全文**。
+
+**例外的に残す**: References/Appendix 内でも、インタビュー引用や Gioia table の引用文
+（first-order concept / second-order theme / aggregate dimension）は残す。
+
+**テキスト整形**: UTF-8 plain text / 段落間に空行 / 不自然な改行とハイフネーションを修正 /
+`-LRB-`→`(`・`-RRB-`→`)` / `⏎` 削除 / 連続スペースを1つに / 元論文の言語は維持。
+
+### OCR について
+
+初期実装では **OCR は必須にしない**。抽出テキストが極端に少ない PDF（語数が少ない／
+スキャン画像のみ）は無理に処理せず、`cleaning_notes.txt` と `processing_log.txt`、
+まとめ CSV に `OCR required`（必要なら `scanned PDF suspected`）と記録してスキップする。
+これらは別途 OCR をかけてから再処理する。
+
+### 使い方
+
+```bash
+# 国別
+python scripts/preprocess_pdfs_for_khcoder.py --country Vietnam
+
+# 全国家
+python scripts/preprocess_pdfs_for_khcoder.py --all-countries
+
+# 特定PDFだけ
+python scripts/preprocess_pdfs_for_khcoder.py --input organized_pdfs/Vietnam/Vietnam_1-1_xxx.pdf
+```
+
+PowerShell:
+
+```powershell
+python .\scripts\preprocess_pdfs_for_khcoder.py --country Vietnam
+python .\scripts\preprocess_pdfs_for_khcoder.py --all-countries
+python .\scripts\preprocess_pdfs_for_khcoder.py --input organized_pdfs\Vietnam\Vietnam_1-1_xxx.pdf
+```
+
+> 前処理は自動の補助です。References/Appendix の除去や質的記述の保持はヒューリスティックに行うため、
+> **最終的な `khcoder_cleaned.txt` の内容は必ず人間が確認**してから KH Coder に投入してください。
 
 ## 重要な方針
 
