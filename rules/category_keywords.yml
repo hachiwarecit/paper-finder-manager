@@ -1,0 +1,75 @@
+# 6カテゴリのキーワード。
+# title / abstract に対するキーワード一致数・一致語を category_check で記録する。
+# キーはカテゴリ名（CLAUDE.md の表記と一致させる）。index は slot 番号 (1-6) に対応。
+
+"Stereotypes / Ageism":
+  index: 1
+  keywords:
+    - ageism
+    - age discrimination
+    - age stereotype
+    - generational stereotype
+    - older worker
+    - older employee
+    - age bias
+    - ageist
+
+"Work Values / Work Ethic":
+  index: 2
+  keywords:
+    - work values
+    - work ethic
+    - work-life balance
+    - generational values
+    - generation Z
+    - millennial
+    - work attitude
+    - work orientation
+
+"Knowledge Transfer / Mentoring":
+  index: 3
+  keywords:
+    - knowledge transfer
+    - knowledge sharing
+    - intergenerational knowledge
+    - mentoring
+    - reverse mentoring
+    - tacit knowledge
+    - knowledge retention
+    - mentorship
+
+"Communication / Psychological Safety":
+  index: 4
+  keywords:
+    - psychological safety
+    - employee voice
+    - speaking up
+    - power distance
+    - communication
+    - hierarchy
+    - voice behavior
+    - silence
+
+"Change Adaptation / Technology Adoption":
+  index: 5
+  keywords:
+    - technology adoption
+    - digital transformation
+    - digital skills
+    - technology acceptance
+    - change adaptation
+    - digitalization
+    - digital divide
+    - ICT adoption
+
+"Status Quo Bias / Resistance to Change":
+  index: 6
+  keywords:
+    - resistance to change
+    - status quo bias
+    - organizational change
+    - change resistance
+    - readiness for change
+    - change management
+    - inertia
+    - openness to change

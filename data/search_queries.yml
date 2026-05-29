@@ -1,0 +1,82 @@
+# 国 × カテゴリごとの検索クエリ。
+# OpenAlex の full-text 検索 (search パラメータ) に渡す自然文クエリとして使う。
+# AND は OpenAlex 側では空白区切りの語として扱われるため、実用上の検索語の集合として記述する。
+# 手動で追加・編集してよい。
+
+Thailand:
+  "Stereotypes / Ageism":
+    - ageism workplace Thailand
+    - age discrimination older workers Thailand
+    - generational stereotype workplace Thailand
+  "Work Values / Work Ethic":
+    - work values generation Thailand
+    - work ethic Generation Z Thailand
+    - work-life balance millennials Thailand
+  "Knowledge Transfer / Mentoring":
+    - intergenerational knowledge transfer Thailand
+    - knowledge sharing young employees Thailand
+    - mentoring workplace Thailand
+  "Communication / Psychological Safety":
+    - psychological safety workplace Thailand
+    - speaking up hierarchy Thailand
+    - employee voice power distance Thailand
+  "Change Adaptation / Technology Adoption":
+    - digital transformation employees Thailand
+    - technology adoption older workers Thailand
+    - digital skills gap workplace Thailand
+  "Status Quo Bias / Resistance to Change":
+    - resistance to change workplace Thailand
+    - organizational change resistance employees Thailand
+    - status quo bias organization Thailand
+
+Vietnam:
+  "Stereotypes / Ageism":
+    - ageism workplace Vietnam
+    - age discrimination older workers Vietnam
+    - generational stereotype workplace Vietnam
+  "Work Values / Work Ethic":
+    - work values generation Vietnam
+    - work ethic Generation Z Vietnam
+    - work-life balance millennials Vietnam
+  "Knowledge Transfer / Mentoring":
+    - intergenerational knowledge transfer Vietnam
+    - knowledge sharing young employees Vietnam
+    - reverse mentoring workplace Vietnam
+  "Communication / Psychological Safety":
+    - employee voice power distance Vietnam
+    - psychological safety workplace Vietnam
+    - speaking up hierarchy Vietnam
+  "Change Adaptation / Technology Adoption":
+    - digital transformation employees Vietnam
+    - digital skills gap workplace Vietnam
+    - technology adoption older workers Vietnam
+  "Status Quo Bias / Resistance to Change":
+    - resistance to change workplace Vietnam
+    - organizational change resistance employees Vietnam
+    - status quo bias organization Vietnam
+
+Japan:
+  "Stereotypes / Ageism":
+    - ageism workplace Japan
+    - age discrimination older workers Japan
+    - generational stereotype workplace Japan
+  "Work Values / Work Ethic":
+    - work values generation Japan
+    - work ethic Generation Z Japan
+    - work-life balance millennials Japan
+  "Knowledge Transfer / Mentoring":
+    - intergenerational knowledge transfer Japan
+    - reverse mentoring workplace Japan
+    - knowledge sharing young employees Japan
+  "Communication / Psychological Safety":
+    - psychological safety workplace Japan
+    - employee voice power distance Japan
+    - speaking up hierarchy Japan
+  "Change Adaptation / Technology Adoption":
+    - technology adoption older workers Japan
+    - digital transformation employees Japan
+    - digital skills gap workplace Japan
+  "Status Quo Bias / Resistance to Change":
+    - status quo bias organization Japan
+    - resistance to change workplace Japan
+    - organizational change resistance employees Japan

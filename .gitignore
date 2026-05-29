@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# ダウンロードした OA PDF (バイナリはリポジトリに含めない)
+pdfs/**/*.pdf
+
+# 整理済み PDF (organize_pdfs.py が生成。元PDFのコピー)
+organized_pdfs/
+
+# KH Coder 前処理の出力 (preprocess_pdfs_for_khcoder.py が生成)
+khcoder_ready/
+
+# 生成される候補表・レポート (実行時に再生成される)
+data/candidates.csv
+data/candidates.json
+reports/candidate_table.csv
+reports/missing_slots.csv
+reports/duplicates.csv
+reports/rename_log.csv
+reports/khcoder_preprocess_log.csv
+
+# OS
+.DS_Store

@@ -1,0 +1,41 @@
+# 自動判定ルール。classify_candidate.py が参照する。
+# このシステムは最終採用を自動化しない。あくまで候補のスクリーニング補助。
+
+# workplace_check: 職場・組織文脈の語
+workplace_keywords:
+  - workplace
+  - organization
+  - organisation
+  - organizational
+  - organisational
+  - employee
+  - workforce
+  - company
+  - firm
+  - team
+  - project
+  - leadership
+  - HRM
+  - human resource
+  - management
+  - public sector
+  - corporate
+  - business
+  - staff
+  - manager
+
+# 年代方針: 原則2010年以降を優先。古典論文は手動で含める余地を残す。
+preferred_year_min: 2010
+
+# strong_candidate に上げる条件（すべて満たす）
+strong_candidate:
+  require_country_context: true   # 対象国が title/abstract で確認できる
+  require_workplace_context: true # 職場文脈がある
+  min_category_matches: 2         # カテゴリ一致語が2語以上
+  require_abstract_or_pdf: true   # abstract か PDF がある
+
+# candidate に上げる最低条件
+candidate:
+  require_workplace_context: true
+  min_category_matches: 1
+  require_abstract_or_pdf: true
