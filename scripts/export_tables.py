@@ -100,8 +100,11 @@ def write_candidate_table(candidates: List[Dict[str, Any]]) -> None:
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
     cols = [
         "id", "country", "category", "slot", "title", "year",
-        "screening_status", "oa_status", "pdf_url", "local_pdf_path",
-        "doi", "related_category", "reason_for_inclusion",
+        "screening_status", "screening_reason",
+        "workplace_organization_score", "exclusion_medical_score",
+        "category_score", "country_score",
+        "oa_status", "legal_download_status", "pdf_url", "local_pdf_path",
+        "doi", "related_category",
     ]
     rows = [
         c for c in candidates

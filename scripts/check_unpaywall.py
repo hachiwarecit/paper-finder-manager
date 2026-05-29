@@ -21,7 +21,8 @@ def check(doi: str, email: str = DEFAULT_EMAIL,
     戻り値: {"is_oa": bool, "oa_status": str, "pdf_url": str|None}
     DOI がない / API 失敗時は is_oa=False を返す。
     """
-    empty = {"is_oa": False, "oa_status": "", "pdf_url": None}
+    empty = {"is_oa": False, "oa_status": "", "pdf_url": None,
+             "license": "", "host_type": ""}
     if not doi:
         return empty
 
@@ -45,6 +46,8 @@ def check(doi: str, email: str = DEFAULT_EMAIL,
         "is_oa": bool(data.get("is_oa")),
         "oa_status": data.get("oa_status", "") or "",
         "pdf_url": best.get("url_for_pdf") or None,
+        "license": best.get("license") or "",
+        "host_type": best.get("host_type") or "",  # publisher / repository
     }
 
 
@@ -57,8 +60,11 @@ def enrich(candidate: Dict[str, Any], email: str = DEFAULT_EMAIL,
     info = check(candidate.get("doi", ""), email=email, session=session)
     if not candidate.get("pdf_url") and info["pdf_url"]:
         candidate["pdf_url"] = info["pdf_url"]
+        candidate["oa_source"] = "unpaywall:" + (info.get("host_type") or "oa")
     if not candidate.get("oa_status") and info["oa_status"]:
         candidate["oa_status"] = info["oa_status"]
+    if not candidate.get("license") and info.get("license"):
+        candidate["license"] = info["license"]
     candidate["is_oa"] = info["is_oa"] or bool(candidate.get("pdf_url"))
     return candidate
 
