@@ -5,13 +5,11 @@ __pycache__/
 venv/
 env/
 
-# ダウンロードした OA PDF (バイナリはリポジトリに含めない)
-pdfs/**/*.pdf
-
-# 整理済み PDF (organize_pdfs.py が生成。元PDFのコピー)
+# PDF バイナリは一切コミットしない（合法性・容量・権利の観点）
+# 各 pdfs/{country}/.gitkeep は既に追跡済みでディレクトリ構成は維持される。
+*.pdf
+pdfs/
 organized_pdfs/
-
-# KH Coder 前処理の出力 (preprocess_pdfs_for_khcoder.py が生成)
 khcoder_ready/
 
 # 生成される候補表・レポート (実行時に再生成される)
@@ -22,6 +20,7 @@ reports/missing_slots.csv
 reports/duplicates.csv
 reports/rename_log.csv
 reports/khcoder_preprocess_log.csv
+reports/download_safety_log.csv
 
 # OS
 .DS_Store

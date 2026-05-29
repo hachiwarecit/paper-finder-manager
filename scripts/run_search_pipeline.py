@@ -188,10 +188,12 @@ def main(argv: List[str]) -> int:
     # 暫定 slot 割り当て
     assign_slots(merged)
 
-    # OA PDF ダウンロード
+    # OA PDF ダウンロード（合法性チェック付き）
     if not args.no_download:
-        n = download_oa_pdfs.download_all(merged, session=session)
-        print(f"OA PDF を {n} 件ダウンロードしました")
+        n, safety_rows = download_oa_pdfs.download_all(merged, session=session)
+        download_oa_pdfs.write_safety_log(safety_rows)
+        print(f"OA PDF を {n} 件ダウンロード（安全ログ: "
+              f"{download_oa_pdfs.SAFETY_LOG_CSV}）")
 
     # 出力
     export_tables.export_all(merged)

@@ -39,3 +39,96 @@ candidate:
   require_workplace_context: true
   min_category_matches: 1
   require_abstract_or_pdf: true
+
+# --- スクリーニング精緻化 (classify_candidate.py の 4 スコア) ---------------
+# 採用寄り: 組織・人・心理・世代・文化に関する語。これが「複数」あることを
+# 組織的職場文脈の条件とする (物理的作業環境ではなく組織文脈)。
+organizational_keywords:
+  - employee
+  - employees
+  - organization
+  - organisation
+  - organizational
+  - organisational
+  - company
+  - firm
+  - team
+  - teams
+  - management
+  - manager
+  - leadership
+  - HRM
+  - human resource
+  - workforce
+  - workplace culture
+  - organizational culture
+  - psychological safety
+  - employee voice
+  - knowledge sharing
+  - knowledge transfer
+  - mentoring
+  - resistance to change
+  - technology adoption
+  - work values
+  - work ethic
+  - generation
+  - generational
+  - intergenerational
+  - ageism
+  - age stereotype
+  - power distance
+  - corporate
+  - staff
+  - colleague
+
+# 除外寄り: 医学・感染症・疫学・公衆衛生の文脈
+medical_exclusion_keywords:
+  - disease
+  - infection
+  - infectious
+  - patient
+  - patients
+  - hospital
+  - clinical
+  - case-control
+  - case control
+  - PCR
+  - ELISA
+  - epidemiology
+  - epidemiological
+  - odds ratio
+  - confidence interval
+  - diagnosis
+  - diagnostic
+  - mortality
+  - morbidity
+  - public health
+  - scrub typhus
+  - seroprevalence
+  - pathogen
+  - vaccine
+  - outbreak
+
+# 除外寄り: 「workplace environment」が物理的環境を指す語
+physical_environment_keywords:
+  - forest
+  - hilly field
+  - water bodies
+  - bushes
+  - agricultural field
+  - paddy field
+  - farmland
+  - infection risk
+  - occupational exposure
+  - vector
+  - rodent
+  - mosquito
+  - soil
+  - vegetation
+
+# スコア閾値
+scoring:
+  org_context_min: 2        # 組織文脈とみなす最低一致数 (複数)
+  org_context_weak: 1       # これ以下は組織文脈が弱い
+  medical_high: 2           # 医学/物理環境スコアがこれ以上で「医学寄り」
+  strong_category_min: 2    # strong_candidate に必要なカテゴリ一致数

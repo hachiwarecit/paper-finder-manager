@@ -170,20 +170,50 @@ python scripts/export_tables.py   # 既存 candidates.json からレポートを
 
 `reports/missing_slots.csv` には、まだ採用論文（`adopted` / `strong_candidate`）が無い枠が出力される。
 
-## 自動判定ルール
+## 自動判定ルール（スコアベース）
 
 `rules/` 配下の YAML で調整できる:
 
 - `rules/country_keywords.yml` … 対象国判定の語
 - `rules/category_keywords.yml` … 6カテゴリのキーワード
-- `rules/inclusion_rules.yml` … 職場文脈語・格上げ条件・年代方針
+- `rules/inclusion_rules.yml` … 組織文脈語・医学/物理環境の除外語・スコア閾値・格上げ条件
 
-判定の流れ:
+候補ごとに **4 つのスコア**を計算する（candidates.csv に列として記録）:
 
-- **country_check** … title/abstract/source に対象国語があるか（著者所属だけでは判定しない）
-- **workplace_check** … 職場・組織文脈の語があるか
-- **category_check** … カテゴリキーワードの一致数・一致語を記録
-- **pdf_check** … OA PDF があるか。無ければ `manual_download_needed`
+| スコア | 意味 |
+|--------|------|
+| `country_score` | 対象国・対象文脈の語の一致数（著者所属だけでは判定しない） |
+| `workplace_organization_score` | 組織・人・心理・世代・文化の語の一致数 |
+| `category_score` | 6カテゴリのキーワード一致数 |
+| `exclusion_medical_score` | 医学/公衆衛生 + 物理的作業環境の語の一致数 |
+
+### 医学・物理環境論文の除外
+
+`workplace` という語があるだけでは職場組織文脈とみなさない。本研究の対象は
+「物理的な作業環境」ではなく「**職場組織・従業員・チーム・マネジメント・心理的障壁**」である。
+そのため次のように判定する。
+
+- **`exclusion_medical_score` が高く（既定 ≥2）、`workplace_organization_score` が低い（<2）** 候補は
+  対象国や `workplace` 語が含まれていても **`exclude_no_workplace_context`** にする。
+  - 例: 感染症・疫学・公衆衛生論文（disease, infection, patient, hospital, clinical,
+    case-control, PCR, ELISA, epidemiology, odds ratio, diagnosis, mortality,
+    public health, scrub typhus など）
+  - 例: `workplace environment` が forest / hilly field / water bodies / bushes /
+    agricultural field / infection risk / occupational exposure など物理的環境を指す場合
+- 医学的だが組織文脈もある場合は **`needs_review`**。
+- 組織文脈の語が 1 つだけ（弱い）場合も **`needs_review`**。
+
+採用寄りにするには、組織・人・心理・世代・文化に関する語（employee, organization,
+company, team, management, leadership, HRM, psychological safety, employee voice,
+knowledge sharing, mentoring, resistance to change, technology adoption,
+work values, generation, intergenerational, ageism, power distance など）が
+**複数**あることを条件にしている。
+
+判定理由は **`screening_reason`** 列に記録する
+（例: `medical/public health context: ...` / `physical workplace environment, not organizational workplace: ...`）。
+
+旧来の個別チェック（country_check / category_check / pdf_check）も内部で使う。
+PDF が無いが条件を満たす候補は `manual_download_needed`。
 
 ## 重複チェック
 
@@ -198,6 +228,51 @@ python scripts/export_tables.py   # 既存 candidates.json からレポートを
 - ダウンロードは **OA PDF URL がある候補のみ**。出版社サイトのスクレイピングは行わない。
 - 保存形式: `pdfs/{country}/{slot}_{short_title}.pdf`
 - ファイル名にスペース・記号・日本語・長すぎるタイトルは使わない（ASCII スラグ化）。
+
+## PDF 自動取得の安全ルール
+
+`download_oa_pdfs.py` は **無料・合法・Open Access と確認できた PDF だけ**を自動保存する。
+少しでも不明・有料・ログイン必須・非公式の可能性があるものは **保存せず**、メタデータと URL
+だけを残して人間確認に回す。保存前に `legal_safety_check()` で次を確認する。
+
+**自動ダウンロード OK の条件（すべて満たす）**
+
+- Unpaywall または OpenAlex で Open Access と確認できる（`is_oa` または `oa_status` が gold/green/hybrid/bronze/diamond）
+- `pdf_url` が明示されている
+- ドメインが信頼できる公開元（出版社公式 OA・大学リポジトリ・政府機関・PMC/PubMed Central・arXiv・DOAJ・MDPI・Frontiers・SpringerOpen・BMC・PLOS など）
+- HTTP ステータス 200 / `Content-Type` が `application/pdf`（または先頭が `%PDF`）
+- ログインページ・HTML ページではない / ファイルサイズが極端に小さくない
+
+**自動ダウンロードしない（保存しない）条件**
+
+- Sci-Hub・LibGen など非公式・違法性の高いドメイン
+- ResearchGate・Academia.edu など権利状態が不明な個人アップロード
+- 401 / 403 / 429、HTML しか返らない、paywall・login・access denied・purchase・rent・subscribe を含むページ
+- PDF 拡張子も `Content-Type` も PDF でない / Open Access か不明 / ライセンス不明
+
+**遵守事項**: 403・401・429 を**回避しない**（リトライ・**User-Agent 偽装・アクセス制限回避をしない**）。
+API のレート制限を守る。Unpaywall / OpenAlex / Crossref / Semantic Scholar には実メール
+（`UNPAYWALL_EMAIL` / `OPENALEX_MAILTO`）または API キーを使う。
+
+判定結果は candidates.csv の次の列に記録する: `legal_download_status`, `legal_download_reason`,
+`oa_source`, `license`, `pdf_checked_at`。`legal_download_status` の値:
+
+| 値 | 意味 |
+|----|------|
+| `safe_oa_downloaded` | OA と確認し保存した |
+| `safe_oa_but_download_failed` | 安全だが通信/書込みエラーで保存できず |
+| `manual_check_required` | OA/ドメイン不明など、人間確認が必要 |
+| `paywalled_or_login_required` | 有料/ログイン必須（401 含む） |
+| `blocked_403` | 403 Forbidden（回避しない） |
+| `not_pdf_response` | PDF ではない応答（HTML 等） |
+| `illegal_or_untrusted_source` | Sci-Hub 等の非公式・違法性の高い元 |
+| `unknown_license` | Open Access と確認できない |
+
+各実行で `reports/download_safety_log.csv` を出力する
+（列: `country,category,title,doi,pdf_url,domain,oa_status,license,legal_download_status,legal_download_reason,local_pdf_path`）。
+
+> **PDF バイナリは GitHub にコミットしない**。`.gitignore` で `*.pdf` / `pdfs/` /
+> `organized_pdfs/` / `khcoder_ready/` を除外している。
 
 ## PDF のファイル名整理 (`scripts/organize_pdfs.py`)
 
