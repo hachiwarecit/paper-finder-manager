@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# ダウンロードした OA PDF (バイナリはリポジトリに含めない)
+pdfs/**/*.pdf
+
+# 生成される候補表・レポート (実行時に再生成される)
+data/candidates.csv
+data/candidates.json
+reports/candidate_table.csv
+reports/missing_slots.csv
+reports/duplicates.csv
+
+# OS
+.DS_Store

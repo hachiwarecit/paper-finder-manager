@@ -1,0 +1,8 @@
+# HTTP client for API access (OpenAlex / Crossref / Semantic Scholar / Unpaywall)
+requests>=2.31.0
+
+# YAML config loading (rules / search queries)
+PyYAML>=6.0
+
+# Fuzzy title matching for deduplication (pure-python, no native deps)
+rapidfuzz>=3.0.0

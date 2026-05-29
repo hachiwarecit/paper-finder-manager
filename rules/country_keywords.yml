@@ -1,0 +1,20 @@
+# 対象国ごとのキーワード。
+# title / abstract / journal_source に含まれるかで「対象国・対象地域・対象文脈」を判定する。
+# 注意: 著者所属国だけでは対象国とみなさない（country_check 参照）。
+Thailand:
+  - Thailand
+  - Thai
+  - Bangkok
+  - Siam
+Vietnam:
+  - Vietnam
+  - Viet Nam
+  - Vietnamese
+  - Hanoi
+  - Ho Chi Minh
+Japan:
+  - Japan
+  - Japanese
+  - Tokyo
+  - Osaka
+  - Nippon
