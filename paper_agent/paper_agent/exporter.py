@@ -22,11 +22,13 @@ from .utils import DATA_DIR, get_logger
 logger = get_logger()
 
 # Excel に出す列
+# 人間が編集して import-metadata で取り込める列は EDITABLE_COLUMNS を参照。
 EXPORT_COLUMNS = [
-    "paper_id", "country", "category", "title", "authors", "year", "doi",
-    "source_url", "pdf_url", "local_path", "original_language",
-    "analysis_language", "generation_groups", "sample_size", "method",
-    "document_type", "screening_status", "rejection_reason", "duplicate_of",
+    "paper_id", "country", "category", "target_country", "organization_context",
+    "title", "authors", "year", "doi", "source_url", "pdf_url", "local_path",
+    "original_language", "analysis_language", "generation_groups",
+    "number_of_generations", "sample_size", "method", "document_type",
+    "screening_status", "rejection_reason", "duplicate_of",
     "duplicate_confidence", "same_dataset_warning", "notes",
 ]
 
@@ -37,6 +39,9 @@ def _record_to_export_row(rec: PaperRecord) -> dict:
         "paper_id": rec.paper_id,
         "country": rec.country,
         "category": rec.category,
+        "target_country": rec.target_country,
+        "organization_context": rec.organization_context,
+        "number_of_generations": rec.number_of_generations,
         "title": rec.title,
         "authors": rec.authors,
         "year": rec.year if rec.year is not None else "",

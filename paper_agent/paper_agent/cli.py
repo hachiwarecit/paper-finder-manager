@@ -402,6 +402,38 @@ def cmd_export(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
+# import-metadata
+# ---------------------------------------------------------------------------
+def cmd_import_metadata(args: argparse.Namespace) -> int:
+    from .metadata_io import import_metadata
+
+    in_path = Path(args.input)
+    if not in_path.is_file():
+        print(f"入力ファイルが見つかりません: {in_path}", file=sys.stderr)
+        return 1
+    try:
+        stats = import_metadata(in_path)
+    except Exception as exc:  # noqa: BLE001
+        print(f"取り込み失敗: {exc}", file=sys.stderr)
+        return 1
+    print("メタデータ取り込み完了:")
+    print(f"  読み込み行数 : {stats.rows_read}")
+    print(f"  更新レコード : {stats.records_updated}")
+    print(f"  更新フィールド: {stats.fields_updated}")
+    if stats.skipped_missing_id:
+        print(f"  DB未登録でスキップ: {len(stats.skipped_missing_id)} 件 "
+              f"({', '.join(stats.skipped_missing_id[:5])}{' ...' if len(stats.skipped_missing_id) > 5 else ''})")
+    for w in stats.warnings[:20]:
+        print(f"  ! {w}")
+    print("\n次に再判定を実行してください:")
+    print("  python -m paper_agent dedupe-all")
+    print("  python -m paper_agent screen-all")
+    print("  python -m paper_agent report --full")
+    print("  python -m paper_agent export --format xlsx")
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # report
 # ---------------------------------------------------------------------------
 def cmd_report(args: argparse.Namespace) -> int:
@@ -502,6 +534,11 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("export", help="台帳出力")
     sp.add_argument("--format", default="xlsx", choices=["xlsx", "csv"])
     sp.set_defaults(func=cmd_export)
+
+    sp = sub.add_parser("import-metadata",
+                        help="編集済み Excel/CSV からメタデータを取り込み DB を更新")
+    sp.add_argument("--input", required=True, help="編集した xlsx または csv のパス")
+    sp.set_defaults(func=cmd_import_metadata)
 
     sp = sub.add_parser("report", help="重複判定・採否の確認レポート (コンソール/Markdown)")
     sp.add_argument("--format", default="both", choices=["console", "md", "both"],

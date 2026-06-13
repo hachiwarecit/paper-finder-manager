@@ -26,6 +26,7 @@ KH Coder によるテキスト分析を前提に、論文 PDF/TXT を取り込�
 | 前処理 | `clean` | KH Coder 用に整形した `*_cleaned.txt` を出力 |
 | 翻訳準備 | `prepare-translation` | 原文・翻訳プロンプト・翻訳枠・ログを保存 |
 | 台帳出力 | `export` | Excel（8シート）/ CSV を出力 |
+| メタデータ補完 | `import-metadata` | 人間が編集した Excel/CSV を DB へ反映（空欄は保持） |
 | 確認レポート | `report` | 区分別の確認レポートをコンソール / Markdown 出力 |
 | 検索 | `search` | OpenAlex から候補を取得（candidate として保存）※Phase 3 |
 
@@ -189,10 +190,70 @@ python -m paper_agent search --country TH --category 5 --limit 20
 PDF から確実に取り出すのが難しいため自動では埋めません（推測しない方針）。
 
 「**同一データの可能性あり**（学位論文⇔雑誌版など、タイトルが違う同一研究）」の検出は、
-著者名・標本数が入っていると精度が大きく上がります。これらは
-`db/papers.sqlite`（または Excel を編集して再取り込み）で補ってから `dedupe-all` を
-再実行すると、より確実に検出できます。完全重複・版違い（同一タイトル/同一本文）は
-メタデータが無くても検出されます。
+著者名・標本数が入っていると精度が大きく上がります。これらは次節の
+`import-metadata` で Excel から補ってから `dedupe-all` を再実行すると、より確実に
+検出できます。完全重複・版違い（同一タイトル/同一本文）はメタデータが無くても検出されます。
+
+---
+
+## 3.6 実データ投入後、Excel でメタデータを補完して再判定する手順
+
+PDF から **著者名・標本数・DOI・調査対象** などは自動では確実に取れないため
+（推測しない方針で空のまま）、人間が Excel で補ってから再判定する運用を用意しています。
+
+### 流れ
+
+```powershell
+# 1) いったん台帳を出力（取り込み済みの全件が All_Papers シートに並ぶ）
+python -m paper_agent export --format xlsx
+
+# 2) data/10_exports/paper_inventory.xlsx を Excel で開き、必要な列を手入力で補完する
+#    （下表の列が編集対象。空欄のままにした列は既存値を保持＝消えない）
+
+# 3) 編集した Excel を取り込んで DB を更新
+python -m paper_agent import-metadata --input "./data/10_exports/paper_inventory.xlsx"
+
+# 4) 補完後のメタデータで再判定
+python -m paper_agent dedupe-all
+python -m paper_agent screen-all
+python -m paper_agent report --full
+python -m paper_agent export --format xlsx
+```
+
+> CSV でも取り込めます（`export --format csv` で出した `paper_inventory.csv` を編集 → `import-metadata --input ...csv`）。
+> Excel が付ける UTF-8 BOM 付き CSV にも対応しています。
+
+### 編集（取り込み）対象の列
+
+`All_Papers` シートの **paper_id をキー**に、以下の列だけを更新します。
+`screening_status` などの判定結果列は手入力しても取り込まれません（再判定で決まります）。
+
+| Excel 列 | 内容 |
+|----------|------|
+| `title` | タイトル（修正すると正規化タイトルも自動更新） |
+| `authors` | 著者（`;` 区切り。姓で重複判定に使う） |
+| `year` | 出版年（整数） |
+| `doi` | DOI |
+| `country` | 整理用の国ラベル（TH/VN/JP） |
+| `category` | カテゴリ（category_1〜category_6） |
+| `target_country` | **調査対象国**（Thailand/Vietnam。著者所属国ではない） |
+| `organization_context` | 職場文脈（例: SME, hospital, hospitality, family business） |
+| `generation_groups` | 世代区分（例: `gen_x; gen_y`） |
+| `number_of_generations` | 比較した世代数（整数） |
+| `sample_size` | 標本数（整数） |
+| `method`（=research_method） | 研究手法（例: survey, interview, mixed） |
+| `document_type` | journal_article / thesis / conference_paper / conference_abstract / teaching_case / report / unknown |
+| `original_language` | 原文言語（en/th/vi） |
+| `analysis_language` | 分析言語（通常 en） |
+| `notes` | 備考 |
+
+### 取り込みの約束
+
+- **空欄は既存値を上書きしません**（補完であって消去ではない）。値を消したい場合は DB を直接編集してください。
+- DB に存在しない `paper_id` の行はスキップします（警告表示）。
+- `number_of_generations` / `sample_size` / `year` に数値以外、`document_type` に未知の値が入っていた行は、その列だけ無視して警告します（処理は止まりません）。
+- とくに **`authors` と `sample_size`（必要なら `organization_context`・`research_method`）を埋める**と、
+  「同一データの可能性あり」（タイトルが違う学位論文⇔雑誌版など）の検出精度が上がります。
 
 ---
 
