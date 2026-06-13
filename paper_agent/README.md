@@ -27,8 +27,10 @@ KH Coder によるテキスト分析を前提に、論文 PDF/TXT を取り込�
 | 翻訳準備 | `prepare-translation` | 原文・翻訳プロンプト・翻訳枠・ログを保存 |
 | 台帳出力 | `export` | Excel（8シート）/ CSV を出力 |
 | メタデータ補完 | `import-metadata` | 人間が編集した Excel/CSV を DB へ反映（空欄は保持） |
-| 確認レポート | `report` | 区分別の確認レポートをコンソール / Markdown 出力 |
-| 検索 | `search` | OpenAlex から候補を取得（candidate として保存）※Phase 3 |
+| 確認レポート | `report` | 区分別の確認レポート＋Analysis N Summary をコンソール / Markdown 出力 |
+| 候補収集 | `harvest` | OpenAlex+Crossref から候補メタデータを収集（**PDFは取得しない**） |
+| 承認PDF取得 | `download-approved` | `approved_for_download` の候補だけ合法的に PDF 取得 |
+| N集計 | `analysis-n` | 最終的に N に数える論文だけを集計 |
 
 ### 分析対象 6 カテゴリ
 
@@ -343,6 +345,127 @@ foreach ($id in $ids) { python -m paper_agent clean --paper-id $id }
 
 > ツールはファイルを削除しません。重複・除外は台帳のフラグ（`screening_status` /
 > `duplicate_of`）で管理されるので、元の PDF/TXT は `02_downloaded` に残ります。
+
+---
+
+## 3.8 候補収集 (harvest) と N カウントの運用
+
+「ルールに合いそうな論文を広く候補として集める」一方で、**N（analysis_N）に数えるのは
+最終的に accepted になり重複もない論文だけ**、という運用です。
+
+### 全体の流れ
+
+```text
+harvest で候補を集める（PDFは取得しない）
+  ↓
+候補メタデータを candidates に保存（候補段階の重複チェック込み）
+  ↓
+export → Excel の Candidates シートを人間が確認
+  ↓
+良さそうな候補だけ candidate_status = approved_for_download にする
+  ↓
+import-metadata で Excel の編集を DB に反映
+  ↓
+download-approved で承認済み候補だけ PDF 取得（合法なOAのみ）
+  ↓
+ingest → dedupe-all → screen-all（通常処理）
+  ↓
+accepted かつ duplicate_of 空・same_dataset_warning=false のものだけ N
+```
+
+### PowerShell コマンド
+
+```powershell
+# 1) 候補収集（PDFは取得しない。candidate_score は優先順位付け用で自動採用しない）
+python -m paper_agent harvest --country TH --category 5 --limit 100
+python -m paper_agent harvest --country VN --category 5 --limit 100
+
+# 2) 候補確認用 Excel 出力
+python -m paper_agent export --format xlsx
+
+# 3) data/10_exports/paper_inventory.xlsx の「Candidates」シートを開き、
+#    良さそうな候補だけ candidate_status を approved_for_download に変更して保存
+
+# 4) Excel の候補ステータスを DB へ反映
+python -m paper_agent import-metadata --input "./data/10_exports/paper_inventory.xlsx"
+
+# 5) 承認済み候補だけ PDF 取得（合法的な OA のみ。違法・不明確はスキップ）
+python -m paper_agent download-approved
+
+# 6) PDF 取得後の通常処理
+python -m paper_agent ingest --input "./data/02_downloaded/TH" --country TH
+python -m paper_agent ingest --input "./data/02_downloaded/VN" --country VN
+python -m paper_agent dedupe-all
+python -m paper_agent screen-all
+python -m paper_agent report --full
+python -m paper_agent export --format xlsx
+
+# 7) N を確認
+python -m paper_agent analysis-n
+```
+
+> `harvest` はネットワークが必要です（OpenAlex/Crossref）。`.env` に `CONTACT_EMAIL` を
+>設定しておくと API の polite pool を使えます。ネットワークが無い場合は候補0件で安全に終了します。
+
+### N に数える条件（厳守）
+
+`analysis-n` / `report --full` の **Analysis N Summary** は、以下を **すべて** 満たす
+PaperRecord だけを N に数えます。
+
+```text
+screening_status == accepted
+duplicate_of is empty
+same_dataset_warning == false
+full_text_available == true
+number_of_generations >= 2
+target_country is Thailand or Vietnam
+workplace_fit == true
+```
+
+**N に数えないもの**（重要）:
+
+- harvest で見つけただけの候補 / pdf_url が見つかっただけの候補 / PDF を保存できただけの論文
+- duplicate / probable_duplicate / same_dataset_possible / needs_review / supplementary / rejected
+- conference_abstract / teaching_case
+- 単一世代研究（Gen Zのみ等）/ 要旨のみ / 本文なし
+- 対象国がタイ・ベトナムでない / 職場文脈がない
+
+> **harvest 件数も download 件数も N ではありません。** PDF が取れても自動採用しません。
+
+### N はどこで確認するか
+
+| 見るもの | 場所 |
+|----------|------|
+| **N の合計と内訳** | `python -m paper_agent analysis-n`（コンソール） |
+| 同じ内容＋区分別 | `data/10_exports/report.md` の「Analysis N Summary」 |
+| **N に入った論文一覧** | `paper_inventory.xlsx` の `Analysis_N` シート |
+| 候補の一覧・状態 | `paper_inventory.xlsx` の `Candidates` シート |
+| 候補の重複 | `paper_inventory.xlsx` の `Candidate_Duplicates` シート |
+| 候補の要確認 | `paper_inventory.xlsx` の `Candidate_Needs_Review` シート |
+
+### 候補ステータス (`candidate_status`)
+
+```text
+pending               収集直後。人間未確認
+approved_for_download 人間が承認。download-approved の対象
+rejected              人間が除外
+duplicate             候補段階で既存と完全/probable 重複
+needs_review          候補段階で same_dataset 疑い等（自動除外しない）
+downloaded            PDF 取得済み
+screened              （将来用）
+```
+
+`download-approved` は **`candidate_status == approved_for_download`** かつ
+**`pdf_url` が空でない** かつ **`legality_note` が違法・不明確でない** 候補だけを対象にします。
+取得できない場合は `download_status` / `download_error` / `attempted_url` / `timestamp` を
+記録して次へ進みます（処理は止まりません）。
+
+### Candidates シートで編集できる列
+
+`import-metadata` は `Candidates` シートを `candidate_id` をキーに取り込みます（空欄は保持）。
+編集できる列: `candidate_status` / `notes` / `category` / `target_country` /
+`generation_keywords` / `workplace_keywords` / `document_type_guess` /
+`open_access_flag` / `pdf_url`。
 
 ---
 

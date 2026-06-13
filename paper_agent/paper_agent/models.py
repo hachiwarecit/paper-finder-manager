@@ -68,6 +68,7 @@ class PaperRecord(BaseModel):
 
     target_country: str = "unknown"          # 調査対象国 (著者所属ではない)
     organization_context: str = "unknown"    # 職場文脈の説明
+    workplace_fit: bool = False              # 職場・組織文脈の有無 (N判定に使用)
     generation_groups: str = ""              # 検出された世代グループ (";" 区切り)
     number_of_generations: int = 0
     sample_size: Optional[int] = None
@@ -130,3 +131,74 @@ class DuplicateResult(BaseModel):
     matched_fields: list[str] = Field(default_factory=list)
     explanation: str = ""
     recommended_action: str = ""
+
+
+# ===========================================================================
+# 候補 (harvest 段階)
+# ===========================================================================
+class CandidateStatus(str, Enum):
+    pending = "pending"
+    approved_for_download = "approved_for_download"
+    rejected = "rejected"
+    duplicate = "duplicate"
+    needs_review = "needs_review"
+    downloaded = "downloaded"
+    screened = "screened"
+
+
+class CandidateDuplicateStatus(str, Enum):
+    exact_duplicate = "exact_duplicate"
+    probable_duplicate = "probable_duplicate"
+    same_dataset_possible = "same_dataset_possible"
+    new_candidate = "new_candidate"
+    needs_review = "needs_review"
+
+
+class Candidate(BaseModel):
+    """検索 (harvest) で見つけた候補。PDF 取得前のメタデータ段階のレコード。
+
+    重要: 候補は N (analysis_N) に数えない。最終的に download → ingest → screen を
+    通って PaperRecord として accepted になった論文だけが N に数えられる。
+    """
+
+    candidate_id: str
+    title: str = ""
+    normalized_title: str = ""
+    authors: str = ""
+    year: Optional[int] = None
+    doi: Optional[str] = None
+    abstract: str = ""
+
+    source_name: str = "unknown"
+    source_url: Optional[str] = None
+    pdf_url: Optional[str] = None
+
+    country: str = "unknown"                 # 整理用ラベル (TH/VN)
+    category: str = "unknown"                # 指定カテゴリ (category_1..6)
+    target_country: str = "unknown"          # 本文/抄録から推定した調査対象国
+
+    generation_keywords: str = ""            # 検出した世代関連語 (";" 区切り)
+    workplace_keywords: str = ""             # 検出した職場文脈語
+    category_keywords: str = ""              # 検出したカテゴリ語
+    document_type_guess: str = "unknown"
+    open_access_flag: bool = False
+    legality_note: str = "unknown"
+
+    candidate_score: float = 0.0             # 人間確認の優先順位付け用 (自動採用しない)
+    candidate_status: CandidateStatus = CandidateStatus.pending
+    duplicate_status: CandidateDuplicateStatus = CandidateDuplicateStatus.new_candidate
+    duplicate_of: Optional[str] = None
+    same_dataset_warning: bool = False
+    notes: str = ""
+
+    # ダウンロード試行の記録
+    download_status: str = ""                # "" / success / failed / skipped
+    download_error: str = ""
+    attempted_url: str = ""
+    timestamp: str = ""
+
+    created_at: str = Field(default_factory=now_iso)
+    updated_at: str = Field(default_factory=now_iso)
+
+    def touch(self) -> None:
+        self.updated_at = now_iso()

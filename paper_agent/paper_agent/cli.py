@@ -289,6 +289,7 @@ def _apply_screen(rec: PaperRecord, db: PaperDB) -> str:
     rec.document_type = result.document_type
     rec.original_language = detect_language(text)
     rec.full_text_available = result.fulltext_fit
+    rec.workplace_fit = result.workplace_fit
     if result.category_fit != "unknown":
         rec.category = result.category_fit
     if result.translation_required:
@@ -417,9 +418,9 @@ def cmd_import_metadata(args: argparse.Namespace) -> int:
         print(f"取り込み失敗: {exc}", file=sys.stderr)
         return 1
     print("メタデータ取り込み完了:")
-    print(f"  読み込み行数 : {stats.rows_read}")
-    print(f"  更新レコード : {stats.records_updated}")
-    print(f"  更新フィールド: {stats.fields_updated}")
+    print(f"  読み込み行数      : {stats.rows_read}")
+    print(f"  論文 更新レコード : {stats.records_updated} ({stats.fields_updated} フィールド)")
+    print(f"  候補 更新レコード : {stats.candidates_updated} ({stats.candidate_fields_updated} フィールド)")
     if stats.skipped_missing_id:
         print(f"  DB未登録でスキップ: {len(stats.skipped_missing_id)} 件 "
               f"({', '.join(stats.skipped_missing_id[:5])}{' ...' if len(stats.skipped_missing_id) > 5 else ''})")
@@ -458,35 +459,76 @@ def cmd_report(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
-# search
+# harvest (候補収集)
 # ---------------------------------------------------------------------------
-def cmd_search(args: argparse.Namespace) -> int:
-    from .search_openalex import search as oa_search
+def cmd_harvest(args: argparse.Namespace) -> int:
+    from .harvester import harvest
 
     country = (args.country or "unknown").upper()
-    cat = f"category_{args.category}" if args.category else "unknown"
-    records = oa_search(args.query or _default_query(country), country=country,
-                        category=cat, limit=args.limit)
-    if not records:
-        print("検索結果なし (ネットワーク/requests 未設定の可能性)。")
-        return 0
+    cat = f"category_{args.category}" if args.category else None
     db = PaperDB()
-    saved = 0
-    for rec in records:
-        # paper_id 衝突回避
-        if db.exists(rec.paper_id):
-            continue
-        db.upsert(rec)
-        saved += 1
-    db.close()
-    print(f"検索: {len(records)} 件取得, {saved} 件を candidate として保存。")
-    print("※ 検索結果は自動採用しません。必ず人間が確認してください。")
+    try:
+        candidates = harvest(country, cat, limit=args.limit, db=db)
+    finally:
+        db.close()
+    if not candidates:
+        print("候補なし (ネットワーク/requests 未設定の可能性)。")
+        return 0
+    counts: dict[str, int] = {}
+    for c in candidates:
+        counts[c.candidate_status.value] = counts.get(c.candidate_status.value, 0) + 1
+    print(f"harvest 完了: {len(candidates)} 件の候補を保存 (country={country}, category={cat})")
+    for k, v in sorted(counts.items()):
+        print(f"  candidate_status={k}: {v}")
+    print("\n※ harvest 件数は N ではありません。PDF は取得していません。")
+    print("※ candidate_score は人間確認の優先順位付け用で、自動採用はしません。")
+    print("次: export → Excel の Candidates シートで approved_for_download を付ける → "
+          "import-metadata → download-approved")
     return 0
 
 
-def _default_query(country: str) -> str:
-    name = COUNTRY_NAME.get(country, country)
-    return f"{name} generational differences workplace employees"
+# search は harvest の別名 (後方互換)
+def cmd_search(args: argparse.Namespace) -> int:
+    print("注: `search` は `harvest` に統合されました。harvest を実行します。")
+    return cmd_harvest(args)
+
+
+# ---------------------------------------------------------------------------
+# download-approved (承認済み候補だけ PDF 取得)
+# ---------------------------------------------------------------------------
+def cmd_download_approved(args: argparse.Namespace) -> int:
+    from .downloader import download_approved
+
+    db = PaperDB()
+    try:
+        stats = download_approved(db)
+    finally:
+        db.close()
+    print("download-approved 完了:")
+    print(f"  承認済み候補       : {stats['approved']}")
+    print(f"  ダウンロード成功   : {stats['downloaded']}")
+    print(f"  スキップ(不適格)   : {stats['skipped']}")
+    print(f"  失敗               : {stats['failed']}")
+    if stats["downloaded"]:
+        print("\nPDF は data/02_downloaded/<国>/ に保存しました。")
+        print("※ ダウンロード成功は N ではありません。次の通常処理を通してください:")
+        print("  python -m paper_agent ingest --input \"./data/02_downloaded/TH\" --country TH")
+        print("  python -m paper_agent dedupe-all")
+        print("  python -m paper_agent screen-all")
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# analysis-n (最終的に N に数える論文の集計)
+# ---------------------------------------------------------------------------
+def cmd_analysis_n(args: argparse.Namespace) -> int:
+    from .analysis import format_summary
+
+    db = PaperDB()
+    records = db.all()
+    db.close()
+    print(format_summary(records))
+    return 0
 
 
 # ---------------------------------------------------------------------------
@@ -546,11 +588,23 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--full", action="store_true", help="コンソールにも全文 (区分別一覧) を表示")
     sp.set_defaults(func=cmd_report)
 
-    sp = sub.add_parser("search", help="OpenAlex 検索 (candidate 保存)")
+    sp = sub.add_parser("analysis-n", help="最終的に N に数える論文を集計")
+    sp.set_defaults(func=cmd_analysis_n)
+
+    sp = sub.add_parser("harvest", help="候補をOpenAlex/Crossrefから収集 (PDFは取得しない)")
+    sp.add_argument("--country", default="TH", help="国コード TH/VN")
+    sp.add_argument("--category", type=int, default=None, help="1..6")
+    sp.add_argument("--limit", type=int, default=100)
+    sp.set_defaults(func=cmd_harvest)
+
+    sp = sub.add_parser("download-approved",
+                        help="approved_for_download の候補だけ PDF を取得")
+    sp.set_defaults(func=cmd_download_approved)
+
+    sp = sub.add_parser("search", help="(非推奨) harvest の別名")
     sp.add_argument("--country", default="TH")
     sp.add_argument("--category", type=int, default=None, help="1..6")
-    sp.add_argument("--query", default=None)
-    sp.add_argument("--limit", type=int, default=20)
+    sp.add_argument("--limit", type=int, default=100)
     sp.set_defaults(func=cmd_search)
 
     return p

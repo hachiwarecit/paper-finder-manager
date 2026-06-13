@@ -146,6 +146,21 @@ def build_markdown(records: list[PaperRecord]) -> str:
     else:
         lines.append("- （該当なし）")
     lines.append("")
+
+    # Analysis N Summary (N に数えてよいのは accepted かつ重複なし等のみ)
+    from .analysis import format_summary
+
+    lines.append("## Analysis N Summary")
+    lines.append("")
+    lines.append("```")
+    lines.append(format_summary(records))
+    lines.append("```")
+    lines.append("")
+    lines.append("> 注: harvest 件数・download 件数は N ではありません。")
+    lines.append("> N は `screening_status=accepted` かつ `duplicate_of` 空・"
+                 "`same_dataset_warning=false`・`full_text_available=true`・"
+                 "`number_of_generations>=2`・対象国が Thailand/Vietnam・`workplace_fit=true` のみ。")
+    lines.append("")
     return "\n".join(lines)
 
 
@@ -163,6 +178,10 @@ def build_console_summary(records: list[PaperRecord]) -> str:
     out = [f"総件数: {len(records)}", "-" * (width + 8)]
     for name, n in rows:
         out.append(f"{name.ljust(width)} : {n}")
+
+    from .analysis import format_summary
+    out.append("")
+    out.append(format_summary(records))
     return "\n".join(out)
 
 

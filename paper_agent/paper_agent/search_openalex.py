@@ -27,6 +27,51 @@ def _reconstruct_abstract(inv_index: Optional[dict]) -> str:
     return " ".join(w for _, w in positions)
 
 
+def search_normalized(query: str, *, limit: int = 50,
+                      mailto: Optional[str] = None) -> list[dict]:
+    """OpenAlex を検索し、ソース非依存の正規化 work 辞書のリストを返す。
+
+    harvest が使う。ネットワーク不通/requests 不在でも例外で止めず [] を返す。
+    """
+    try:
+        import requests  # type: ignore
+    except ImportError:
+        logger.warning("requests 不在のため OpenAlex 検索をスキップ。")
+        return []
+
+    mailto = mailto or os.environ.get("OPENALEX_MAILTO") or os.environ.get("CONTACT_EMAIL")
+    params = {"search": query, "per-page": min(max(limit, 1), 200), "mailto": mailto or ""}
+    try:
+        resp = requests.get(OPENALEX_URL, params=params, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("OpenAlex 検索失敗: %s", exc)
+        return []
+
+    out: list[dict] = []
+    for work in data.get("results", [])[:limit]:
+        oa = work.get("open_access", {}) or {}
+        out.append({
+            "title": work.get("title") or work.get("display_name") or "",
+            "authors": "; ".join(
+                a.get("author", {}).get("display_name", "")
+                for a in work.get("authorships", [])
+            ),
+            "year": work.get("publication_year"),
+            "doi": (work.get("doi") or "").replace("https://doi.org/", "") or None,
+            "abstract": _reconstruct_abstract(work.get("abstract_inverted_index")),
+            "source_name": "OpenAlex",
+            "source_url": work.get("id"),
+            "pdf_url": oa.get("oa_url"),
+            "open_access_flag": bool(oa.get("is_oa")),
+            "document_type_guess": "journal_article" if work.get("type") == "article" else "unknown",
+            "license": oa.get("oa_status") or "unknown",
+        })
+    logger.info("OpenAlex: %d 件取得 (query=%r)", len(out), query)
+    return out
+
+
 def search(query: str, *, country: str = "unknown", category: str = "unknown",
            limit: int = 20, mailto: Optional[str] = None) -> list[PaperRecord]:
     """OpenAlex を検索し PaperRecord(candidate) のリストを返す。"""

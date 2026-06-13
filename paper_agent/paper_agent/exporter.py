@@ -64,23 +64,79 @@ def _record_to_export_row(rec: PaperRecord) -> dict:
     }
 
 
+# Candidates シートの列 (人間が編集できる。candidate_status を編集 → import-metadata)
+CANDIDATE_COLUMNS = [
+    "candidate_id", "candidate_status", "candidate_score", "duplicate_status",
+    "duplicate_of", "same_dataset_warning", "title", "authors", "year", "doi",
+    "country", "category", "target_country", "generation_keywords",
+    "workplace_keywords", "category_keywords", "document_type_guess",
+    "open_access_flag", "pdf_url", "source_name", "source_url", "legality_note",
+    "download_status", "download_error", "notes",
+]
+
+
+def _candidate_to_row(c) -> dict:
+    return {
+        "candidate_id": c.candidate_id,
+        "candidate_status": c.candidate_status.value if hasattr(c.candidate_status, "value") else str(c.candidate_status),
+        "candidate_score": c.candidate_score,
+        "duplicate_status": c.duplicate_status.value if hasattr(c.duplicate_status, "value") else str(c.duplicate_status),
+        "duplicate_of": c.duplicate_of or "",
+        "same_dataset_warning": "YES" if c.same_dataset_warning else "",
+        "title": c.title,
+        "authors": c.authors,
+        "year": c.year if c.year is not None else "",
+        "doi": c.doi or "",
+        "country": c.country,
+        "category": c.category,
+        "target_country": c.target_country,
+        "generation_keywords": c.generation_keywords,
+        "workplace_keywords": c.workplace_keywords,
+        "category_keywords": c.category_keywords,
+        "document_type_guess": c.document_type_guess,
+        "open_access_flag": "YES" if c.open_access_flag else "",
+        "pdf_url": c.pdf_url or "",
+        "source_name": c.source_name,
+        "source_url": c.source_url or "",
+        "legality_note": c.legality_note,
+        "download_status": c.download_status,
+        "download_error": c.download_error,
+        "notes": c.notes,
+    }
+
+
 def export(fmt: str = "xlsx", db: PaperDB | None = None) -> Path:
     """台帳を出力し、出力ファイル Path を返す。fmt は xlsx / csv。"""
     own_db = db is None
     db = db or PaperDB()
     try:
         records = db.all()
+        candidates = db.all_candidates()
     finally:
         if own_db:
             db.close()
 
     rows = [_record_to_export_row(r) for r in records]
+    cand_rows = [_candidate_to_row(c) for c in candidates]
     out_dir = DATA_DIR / "10_exports"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     if fmt == "csv":
+        _export_candidates_csv(cand_rows, out_dir)
         return _export_csv(rows, out_dir)
-    return _export_xlsx(rows, records, out_dir)
+    return _export_xlsx(rows, records, cand_rows, candidates, out_dir)
+
+
+def _export_candidates_csv(cand_rows: list[dict], out_dir: Path) -> Path:
+    import csv
+
+    out_path = out_dir / "candidates.csv"
+    with out_path.open("w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=CANDIDATE_COLUMNS)
+        writer.writeheader()
+        for r in cand_rows:
+            writer.writerow(r)
+    return out_path
 
 
 def _export_csv(rows: list[dict], out_dir: Path) -> Path:
@@ -100,12 +156,16 @@ def _status(rows: list[dict], status: str) -> list[dict]:
     return [r for r in rows if r["screening_status"] == status]
 
 
-def _export_xlsx(rows: list[dict], records: list[PaperRecord], out_dir: Path) -> Path:
+def _export_xlsx(rows: list[dict], records: list[PaperRecord],
+                 cand_rows: list[dict], candidates: list, out_dir: Path) -> Path:
     try:
         import pandas as pd  # type: ignore
     except ImportError:
         logger.warning("pandas 不在のため CSV にフォールバックします。")
+        _export_candidates_csv(cand_rows, out_dir)
         return _export_csv(rows, out_dir)
+
+    from .analysis import is_analysis_n
 
     out_path = out_dir / "paper_inventory.xlsx"
     all_df = pd.DataFrame(rows, columns=EXPORT_COLUMNS)
@@ -120,6 +180,15 @@ def _export_xlsx(rows: list[dict], records: list[PaperRecord], out_dir: Path) ->
         cat_counts = pd.DataFrame(columns=["category", "count"])
         crosstab = pd.DataFrame()
 
+    # Analysis_N: N 条件を満たす論文だけ
+    n_rows = [r for r, rec in zip(rows, records) if is_analysis_n(rec)]
+    analysis_n_df = pd.DataFrame(n_rows, columns=EXPORT_COLUMNS)
+
+    # 候補シート
+    cand_df = pd.DataFrame(cand_rows, columns=CANDIDATE_COLUMNS)
+    cand_dups = [r for r in cand_rows if r["duplicate_status"] in ("exact_duplicate", "probable_duplicate")]
+    cand_review = [r for r in cand_rows if r["candidate_status"] == "needs_review"]
+
     sheets = {
         "All_Papers": all_df,
         "Accepted": pd.DataFrame(_status(rows, "accepted"), columns=EXPORT_COLUMNS),
@@ -129,14 +198,20 @@ def _export_xlsx(rows: list[dict], records: list[PaperRecord], out_dir: Path) ->
         "Needs_Review": pd.DataFrame(_status(rows, "needs_review"), columns=EXPORT_COLUMNS),
         "Category_Counts": cat_counts,
         "Country_Category_Crosstab": crosstab.reset_index() if not crosstab.empty else crosstab,
+        "Analysis_N": analysis_n_df,
+        "Candidates": cand_df,
+        "Candidate_Duplicates": pd.DataFrame(cand_dups, columns=CANDIDATE_COLUMNS),
+        "Candidate_Needs_Review": pd.DataFrame(cand_review, columns=CANDIDATE_COLUMNS),
     }
 
     try:
         with pd.ExcelWriter(out_path, engine="openpyxl") as writer:
             for name, df in sheets.items():
                 df.to_excel(writer, sheet_name=name, index=(name == "Country_Category_Crosstab" and crosstab.empty))
-        logger.info("Excel 出力: %s (%d 行)", out_path, len(rows))
+        logger.info("Excel 出力: %s (papers=%d, candidates=%d, analysis_N=%d)",
+                    out_path, len(rows), len(cand_rows), len(n_rows))
         return out_path
     except Exception as exc:  # noqa: BLE001
         logger.warning("Excel 出力失敗 (%s)。CSV にフォールバック。", exc)
+        _export_candidates_csv(cand_rows, out_dir)
         return _export_csv(rows, out_dir)

@@ -10,7 +10,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Optional
 
-from .models import PaperRecord
+from .models import Candidate, PaperRecord
 from .utils import DB_PATH, get_logger
 
 logger = get_logger()
@@ -21,18 +21,36 @@ COLUMNS = [
     "authors", "year", "doi", "source_name", "source_url", "pdf_url",
     "local_pdf_path", "local_text_path", "original_language",
     "analysis_language", "full_text_available", "target_country",
-    "organization_context", "generation_groups", "number_of_generations",
-    "sample_size", "research_method", "main_topic", "peer_reviewed",
-    "document_type", "license_status", "legality_note", "screening_status",
-    "rejection_reason", "duplicate_group_id", "duplicate_of",
-    "duplicate_confidence", "same_dataset_warning", "notes",
+    "organization_context", "workplace_fit", "generation_groups",
+    "number_of_generations", "sample_size", "research_method", "main_topic",
+    "peer_reviewed", "document_type", "license_status", "legality_note",
+    "screening_status", "rejection_reason", "duplicate_group_id",
+    "duplicate_of", "duplicate_confidence", "same_dataset_warning", "notes",
     "pdf_sha256", "text_sha256", "created_at", "updated_at",
+]
+
+# candidates テーブルの列 (Candidate のフィールドに対応)
+CAND_COLUMNS = [
+    "candidate_id", "title", "normalized_title", "authors", "year", "doi",
+    "abstract", "source_name", "source_url", "pdf_url", "country", "category",
+    "target_country", "generation_keywords", "workplace_keywords",
+    "category_keywords", "document_type_guess", "open_access_flag",
+    "legality_note", "candidate_score", "candidate_status", "duplicate_status",
+    "duplicate_of", "same_dataset_warning", "notes", "download_status",
+    "download_error", "attempted_url", "timestamp", "created_at", "updated_at",
 ]
 
 _CREATE_SQL = f"""
 CREATE TABLE IF NOT EXISTS papers (
     {", ".join(f"{c} TEXT" for c in COLUMNS if c not in ("paper_id",))},
     paper_id TEXT PRIMARY KEY
+);
+"""
+
+_CREATE_CAND_SQL = f"""
+CREATE TABLE IF NOT EXISTS candidates (
+    {", ".join(f"{c} TEXT" for c in CAND_COLUMNS if c not in ("candidate_id",))},
+    candidate_id TEXT PRIMARY KEY
 );
 """
 
@@ -49,6 +67,17 @@ class PaperDB:
 
     def _create(self) -> None:
         self.conn.execute(_CREATE_SQL)
+        self.conn.execute(_CREATE_CAND_SQL)
+        self.conn.commit()
+        self._migrate()
+
+    def _migrate(self) -> None:
+        """既存 DB に不足している列を追加する (後方互換)。"""
+        cur = self.conn.execute("PRAGMA table_info(papers)")
+        existing = {row["name"] for row in cur.fetchall()}
+        for col in COLUMNS:
+            if col not in existing:
+                self.conn.execute(f"ALTER TABLE papers ADD COLUMN {col} TEXT")
         self.conn.commit()
 
     # ------------------------------------------------------------------
@@ -118,6 +147,7 @@ class PaperDB:
             full_text_available=as_bool("full_text_available"),
             target_country=d.get("target_country") or "unknown",
             organization_context=d.get("organization_context") or "unknown",
+            workplace_fit=as_bool("workplace_fit"),
             generation_groups=d.get("generation_groups") or "",
             number_of_generations=as_int("number_of_generations") or 0,
             sample_size=as_int("sample_size"),
@@ -176,6 +206,120 @@ class PaperDB:
 
     def count(self) -> int:
         cur = self.conn.execute("SELECT COUNT(*) AS n FROM papers")
+        return int(cur.fetchone()["n"])
+
+    # ------------------------------------------------------------------
+    # candidates (harvest 段階)
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _cand_to_row(cand: Candidate) -> dict:
+        d = cand.model_dump()
+        row = {}
+        for c in CAND_COLUMNS:
+            v = d.get(c)
+            if isinstance(v, bool):
+                v = "1" if v else "0"
+            elif isinstance(v, Enum):
+                v = v.value
+            elif v is None:
+                v = None
+            else:
+                v = str(v)
+            row[c] = v
+        return row
+
+    @staticmethod
+    def _cand_from_row(row: sqlite3.Row) -> Candidate:
+        d = dict(row)
+
+        def as_bool(key):
+            v = d.get(key)
+            return str(v) in ("1", "True", "true") if v not in (None, "") else False
+
+        def as_int(key):
+            v = d.get(key)
+            if v in (None, ""):
+                return None
+            try:
+                return int(float(v))
+            except (TypeError, ValueError):
+                return None
+
+        def as_float(key):
+            v = d.get(key)
+            if v in (None, ""):
+                return 0.0
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                return 0.0
+
+        return Candidate(
+            candidate_id=d.get("candidate_id") or "",
+            title=d.get("title") or "",
+            normalized_title=d.get("normalized_title") or "",
+            authors=d.get("authors") or "",
+            year=as_int("year"),
+            doi=d.get("doi") or None,
+            abstract=d.get("abstract") or "",
+            source_name=d.get("source_name") or "unknown",
+            source_url=d.get("source_url") or None,
+            pdf_url=d.get("pdf_url") or None,
+            country=d.get("country") or "unknown",
+            category=d.get("category") or "unknown",
+            target_country=d.get("target_country") or "unknown",
+            generation_keywords=d.get("generation_keywords") or "",
+            workplace_keywords=d.get("workplace_keywords") or "",
+            category_keywords=d.get("category_keywords") or "",
+            document_type_guess=d.get("document_type_guess") or "unknown",
+            open_access_flag=as_bool("open_access_flag"),
+            legality_note=d.get("legality_note") or "unknown",
+            candidate_score=as_float("candidate_score"),
+            candidate_status=d.get("candidate_status") or "pending",
+            duplicate_status=d.get("duplicate_status") or "new_candidate",
+            duplicate_of=d.get("duplicate_of") or None,
+            same_dataset_warning=as_bool("same_dataset_warning"),
+            notes=d.get("notes") or "",
+            download_status=d.get("download_status") or "",
+            download_error=d.get("download_error") or "",
+            attempted_url=d.get("attempted_url") or "",
+            timestamp=d.get("timestamp") or "",
+            created_at=d.get("created_at") or "",
+            updated_at=d.get("updated_at") or "",
+        )
+
+    def upsert_candidate(self, cand: Candidate) -> None:
+        cand.touch()
+        row = self._cand_to_row(cand)
+        placeholders = ", ".join(["?"] * len(CAND_COLUMNS))
+        updates = ", ".join(f"{c}=excluded.{c}" for c in CAND_COLUMNS if c != "candidate_id")
+        sql = (
+            f"INSERT INTO candidates ({', '.join(CAND_COLUMNS)}) VALUES ({placeholders}) "
+            f"ON CONFLICT(candidate_id) DO UPDATE SET {updates}"
+        )
+        self.conn.execute(sql, [row[c] for c in CAND_COLUMNS])
+        self.conn.commit()
+
+    def get_candidate(self, candidate_id: str) -> Optional[Candidate]:
+        cur = self.conn.execute(
+            "SELECT * FROM candidates WHERE candidate_id=?", (candidate_id,)
+        )
+        row = cur.fetchone()
+        return self._cand_from_row(row) if row else None
+
+    def all_candidates(self) -> list[Candidate]:
+        cur = self.conn.execute("SELECT * FROM candidates ORDER BY candidate_id")
+        return [self._cand_from_row(r) for r in cur.fetchall()]
+
+    def candidates_by_status(self, status: str) -> list[Candidate]:
+        cur = self.conn.execute(
+            "SELECT * FROM candidates WHERE candidate_status=? ORDER BY candidate_id",
+            (status,),
+        )
+        return [self._cand_from_row(r) for r in cur.fetchall()]
+
+    def candidate_count(self) -> int:
+        cur = self.conn.execute("SELECT COUNT(*) AS n FROM candidates")
         return int(cur.fetchone()["n"])
 
     def close(self) -> None:
