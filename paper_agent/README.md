@@ -257,6 +257,95 @@ python -m paper_agent export --format xlsx
 
 ---
 
+## 3.7 Windows PowerShell まとめ（実データ検証チートシート）
+
+> 前提: `cd paper_agent` でプロジェクト直下にいること（`config/` `data/` `db/` が見える場所）。
+> 仮想環境を使う場合は `.\.venv\Scripts\Activate.ps1` を先に実行。
+
+### A. 既存DB・出力ファイルを安全にリセット
+
+`data/02_downloaded/`（あなたが入れた PDF/TXT）は消えません。生成物だけを消します。
+
+```powershell
+# 管理台帳(DB)をリセット
+Remove-Item -Force -ErrorAction SilentlyContinue .\db\papers.sqlite
+
+# 生成物をリセット（.gitkeep は残す）
+Get-ChildItem .\data\03_screening, .\data\08_cleaned, .\data\10_exports `
+  -File -Exclude '.gitkeep' -ErrorAction SilentlyContinue | Remove-Item -Force
+Get-ChildItem .\data\09_translated -Directory -ErrorAction SilentlyContinue |
+  Remove-Item -Recurse -Force
+Remove-Item -Recurse -Force -ErrorAction SilentlyContinue .\logs
+
+# 初期化（フォルダとDBを作り直す）
+python -m paper_agent init
+```
+
+> `02_downloaded` の中身も入れ替えてやり直したいときだけ、次も実行:
+> `Get-ChildItem .\data\02_downloaded -File -Exclude '.gitkeep' | Remove-Item -Force`
+
+### B. 実データの一括処理（取り込み→判定→レポート→台帳）
+
+`data/02_downloaded/` に PDF/TXT を入れてから:
+
+```powershell
+python -m paper_agent init
+python -m paper_agent ingest --input "./data/02_downloaded" --country TH
+python -m paper_agent dedupe-all
+python -m paper_agent screen-all
+python -m paper_agent report --full
+python -m paper_agent export --format xlsx
+```
+
+> 国を分けたいときは `data/02_downloaded/TH` と `data/02_downloaded/VN` に分け、
+> `ingest` を国ごとに2回実行（`--country TH` / `--country VN`）。`--country` は整理用ラベルで、
+> 実際の調査対象国は本文から推定され `target_country` に入ります。
+
+### C. Excel でメタデータを補完してから再判定
+
+`data/10_exports/paper_inventory.xlsx` を開いて `authors` / `sample_size` などを手入力 → 保存 → 取り込み:
+
+```powershell
+python -m paper_agent import-metadata --input "./data/10_exports/paper_inventory.xlsx"
+python -m paper_agent dedupe-all
+python -m paper_agent screen-all
+python -m paper_agent report --full
+python -m paper_agent export --format xlsx
+```
+
+### D. （任意）採用論文を KH Coder 用 cleaned.txt にする
+
+cleaned テキストは `clean` コマンドで論文ごとに生成します（採用が確定した論文に対して実行）。
+採用（accepted）の paper_id をまとめて処理する例:
+
+```powershell
+$ids = python -c "from paper_agent.db import PaperDB; [print(r.paper_id) for r in PaperDB().by_status('accepted')]"
+foreach ($id in $ids) { python -m paper_agent clean --paper-id $id }
+```
+
+出力は `data/08_cleaned/<paper_id>_..._cleaned.txt`（UTF-8）です。
+
+### E. 実データ検証で「どのファイルを見るか」
+
+| 見るもの | 場所 | 何を確認するか |
+|----------|------|----------------|
+| **確認レポート** | `data/10_exports/report.md` | 6区分の全体像。まずここを見る |
+| **管理台帳** | `data/10_exports/paper_inventory.xlsx` | 全件の詳細。シートで区分別に確認（下記） |
+| → 主分析候補 | xlsx の `Accepted` シート | 採用候補。最終採用は人間が決める |
+| → 補助文献 | xlsx の `Supplementary` シート | 単一世代/要旨のみ/Teaching Case など |
+| → 除外 | xlsx の `Rejected` シート | 対象国不一致・職場文脈なし等 |
+| **重複の確認** | xlsx の `Duplicates` シート / report.md「完全重複」 | `duplicate_of` がどの論文を指すか |
+| **要確認** | xlsx の `Needs_Review` シート / report.md「要確認」「同一データの可能性あり」 | タイ語原文・章混在・同一データ疑い |
+| **翻訳が必要な論文** | report.md 末尾の一覧 | `original_language=th/vi` の論文 |
+| **KH Coder 入力** | `data/08_cleaned/*_cleaned.txt` | `clean` 実行後に生成（手順D） |
+| **翻訳準備** | `data/09_translated/<paper_id>/` | `prepare-translation` 実行後 |
+| **ログ** | `logs/paper_agent.log` | 抽出失敗など処理中の警告 |
+
+> ツールはファイルを削除しません。重複・除外は台帳のフラグ（`screening_status` /
+> `duplicate_of`）で管理されるので、元の PDF/TXT は `02_downloaded` に残ります。
+
+---
+
 ## 4. フォルダ構成
 
 ```
