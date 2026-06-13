@@ -1,0 +1,179 @@
+# screener.py が使うルールベース判定の設定。
+# すべてのキーワードは小文字で照合される。
+
+# ------------------------------------------------------------------
+# 対象国 (target country) 判定
+#   著者所属国ではなく、調査対象国・組織・文脈を表す語を重視する。
+# ------------------------------------------------------------------
+country:
+  thailand:
+    keywords:
+      - thailand
+      - thai
+      - bangkok
+      - chiang mai
+      - thai workplace
+      - thai company
+      - thai employees
+      - eastern economic corridor
+  vietnam:
+    keywords:
+      - vietnam
+      - vietnamese
+      - hanoi
+      - ho chi minh
+      - vietnam listed companies
+      - fdi enterprises in vietnam
+
+# ------------------------------------------------------------------
+# 職場・組織文脈 (workplace fit)
+# ------------------------------------------------------------------
+workplace:
+  keywords:
+    - workplace
+    - employee
+    - employees
+    - employer
+    - organization
+    - organizational
+    - company
+    - companies
+    - firm
+    - enterprise
+    - corporate
+    - sme
+    - smes
+    - business
+    - industry
+    - hospitality
+    - hotel
+    - manufacturing
+    - public sector
+    - government agency
+    - hospital
+    - nurse
+    - teacher
+    - faculty
+    - university staff
+    - family business
+    - family firm
+    - human resource
+    - staff
+    - worker
+    - workforce
+
+# ------------------------------------------------------------------
+# 世代 (generation fit)
+#   2世代以上を比較していれば generation_fit = true。
+#   各グループに属する語が1つでも見つかればそのグループが「出現」とみなす。
+# ------------------------------------------------------------------
+generations:
+  baby_boomers:
+    - baby boomer
+    - baby boomers
+    - boomer
+    - boomers
+  gen_x:
+    - gen x
+    - gen-x
+    - generation x
+    - gen xers
+  gen_y:
+    - gen y
+    - gen-y
+    - generation y
+    - millennial
+    - millennials
+  gen_z:
+    - gen z
+    - gen-z
+    - generation z
+    - zoomer
+  older_younger:
+    - older worker
+    - older workers
+    - older employees
+    - senior employees
+  younger_group:
+    - younger worker
+    - younger workers
+    - younger employees
+    - junior employees
+  succession:
+    - founder
+    - successor
+    - predecessor
+    - next generation
+
+# 「多世代」を直接示す語。これがあれば generation_fit を補強する。
+multigenerational_markers:
+  - multigenerational
+  - multi-generational
+  - cross-generational
+  - intergenerational
+  - generational difference
+  - generational differences
+  - generation gap
+  - generational diversity
+  - generationally diverse
+
+# 単一世代研究を示すマーカー (主分析からは外し supplementary 寄りにする)
+single_generation_markers:
+  - generation z only
+  - only generation z
+  - focusing on gen z
+  - millennials only
+
+# ------------------------------------------------------------------
+# 文書タイプ (document_type)
+# ------------------------------------------------------------------
+document_type:
+  thesis:
+    - dissertation
+    - thesis
+    - master's degree
+    - doctoral
+    - in partial fulfillment
+    - faculty of graduate
+  conference_paper:
+    - proceedings
+    - conference paper
+    - international conference
+  conference_abstract:
+    - abstract booklet
+    - book of abstracts
+    - extended abstract
+  teaching_case:
+    - teaching case
+    - teaching note
+    - case study for classroom
+    - instructor's manual
+    - this case was prepared
+  report:
+    - technical report
+    - working paper
+    - white paper
+  journal_article:
+    - journal of
+    - vol.
+    - issue
+    - doi
+
+# ------------------------------------------------------------------
+# 本文 (full text) 判定の閾値
+# ------------------------------------------------------------------
+fulltext:
+  # この文字数未満なら要旨のみ (abstract only) とみなす
+  min_chars_for_fulltext: 3000
+  # 本文と判断するために、Abstract以外に必要なセクション数
+  min_sections_beyond_abstract: 1
+
+# ------------------------------------------------------------------
+# 言語 (language)
+# ------------------------------------------------------------------
+language:
+  # これらの言語コードは翻訳が必要
+  translation_required_langs:
+    - th
+    - vi
+  analysis_language: en
