@@ -33,7 +33,8 @@ from .utils import author_overlap, normalize_title
 
 # しきい値
 TITLE_EXACT = 100
-TITLE_PROBABLE = 88        # これ以上で「タイトルが似ている」
+TITLE_ONLY_PROBABLE = 94   # メタデータが無くてもタイトル単独でほぼ同一とみなす閾値
+TITLE_PROBABLE = 88        # これ以上 + 補助情報1つで「タイトルが似ている」
 TITLE_SAME_DATASET = 55    # これ以上 88 未満で「やや似ている」
 ABSTRACT_SIM_HIGH = 85
 
@@ -112,7 +113,21 @@ def compare(cand: PaperRecord, other: PaperRecord) -> DuplicateResult:
     )
 
     # ----- Stage 2: 高類似 (probable_duplicate) -----
-    # タイトルがかなり似ていて、著者か標本数か対象国のいずれかが一致
+    # (a) 取り込み直後でメタデータ(著者/標本数/対象国)が未充填でも、
+    #     タイトルがほぼ同一なら重複候補とする (KH Coder cleaned txt 等を想定)。
+    if title_sim >= TITLE_ONLY_PROBABLE:
+        conf = min(0.99, 0.7 + title_sim / 100 * 0.25)
+        return DuplicateResult(
+            candidate_paper_id=cand.paper_id,
+            matched_paper_id=other.paper_id,
+            duplicate_type=DuplicateType.probable_duplicate,
+            confidence=round(conf, 3),
+            matched_fields=["title_similarity"],
+            explanation=f"タイトルがほぼ同一 (類似度={title_sim:.0f})。版違い/改題の可能性。",
+            recommended_action="probable_duplicate。人間が会議版/雑誌版などを確認し採否を決める。",
+        )
+
+    # (b) タイトルがかなり似ていて、著者か標本数か対象国のいずれかが一致
     if title_sim >= TITLE_PROBABLE and (auth_ov >= 0.5 or same_sample or same_country):
         fields = ["title_similarity"]
         if auth_ov >= 0.5:

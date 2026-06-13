@@ -123,28 +123,61 @@ def extract_text(path: str | Path) -> ExtractionResult:
 # ---------------------------------------------------------------------------
 # タイトル推定
 # ---------------------------------------------------------------------------
+# タイトル行として不適切な書き出し (本文の文・メタ情報)
+_NON_TITLE_PREFIXES = (
+    "abstract", "keywords", "doi", "http", "issn", "vol", "this study",
+    "this paper", "this research", "this article", "the purpose", "in this",
+    "we ", "บทคัดย่อ", "บทนำ", "received", "accepted", "available online",
+)
+
+
 def guess_title(text: str) -> str:
-    """本文先頭付近から、最も長く意味のありそうな行をタイトルとして推定する。"""
+    """タイトルを推定する。
+
+    タイトルは通常 Abstract 見出しより上にあるため、先頭〜Abstract の手前を
+    優先的に探す。見つからなければ先頭 40 行から推定する。
+    """
     if not text:
         return ""
-    lines = [ln.strip() for ln in text.splitlines()[:40]]
-    candidates = []
-    for ln in lines:
-        if len(ln) < 12 or len(ln) > 200:
-            continue
-        low = ln.lower()
-        if low.startswith(("abstract", "keywords", "doi", "http", "issn", "vol")):
-            continue
-        # 数字や記号だらけの行は除外
-        letters = sum(c.isalpha() for c in ln)
-        if letters < len(ln) * 0.6:
-            continue
-        candidates.append(ln)
-    if not candidates:
-        return ""
-    # 上の方にある、ある程度長い行を優先
-    candidates.sort(key=lambda s: (-len(s)))
-    return candidates[0]
+    all_lines = [ln.strip() for ln in text.splitlines()]
+
+    # Abstract 見出しの位置を探す (上限 60 行)。タイ語/ベトナム語の見出しも見る。
+    abstract_idx = None
+    for i, ln in enumerate(all_lines[:60]):
+        low = ln.lower().rstrip(":. ")
+        if (low == "abstract" or low.startswith("abstract")
+                or ln.startswith("บทคัดย่อ") or low.startswith("tóm tắt")):
+            abstract_idx = i
+            break
+    if abstract_idx is None or abstract_idx == 0:
+        abstract_idx = 40
+
+    def candidates_in(lines: list[str]) -> list[str]:
+        out = []
+        for ln in lines:
+            if len(ln) < 12 or len(ln) > 200:
+                continue
+            low = ln.lower()
+            if low.startswith(_NON_TITLE_PREFIXES):
+                continue
+            letters = sum(c.isalpha() for c in ln)
+            if letters < len(ln) * 0.6:
+                continue
+            out.append(ln)
+        return out
+
+    # 1) Abstract より前の領域から探す (タイトルが最も入りやすい)
+    cands = candidates_in(all_lines[:abstract_idx])
+    if cands:
+        cands.sort(key=lambda s: -len(s))
+        return cands[0]
+
+    # 2) フォールバック: 先頭 40 行
+    cands = candidates_in(all_lines[:40])
+    if cands:
+        cands.sort(key=lambda s: -len(s))
+        return cands[0]
+    return ""
 
 
 # ---------------------------------------------------------------------------

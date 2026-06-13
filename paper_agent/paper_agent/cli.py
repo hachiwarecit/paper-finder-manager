@@ -29,6 +29,8 @@ from .models import DuplicateType, PaperRecord, ScreeningStatus
 from .screener import (
     assess_country,
     assess_generations,
+    detected_generation_groups,
+    enrich_record,
     screen,
 )
 from .translator_prep import prepare_translation
@@ -206,8 +208,11 @@ def cmd_extract(args: argparse.Namespace) -> int:
 # dedupe
 # ---------------------------------------------------------------------------
 def _apply_dedupe(rec: PaperRecord, others: list[PaperRecord], db: PaperDB) -> str:
+    # 重複判定の前に、対象国・世代区分・言語などをテキストから補っておく
+    enrich_record(rec, get_text_for(rec))
     result = best_match(rec, others)
     if result.duplicate_type == DuplicateType.not_duplicate:
+        db.upsert(rec)  # enrich_record で補ったメタデータを保存
         return "not_duplicate"
 
     matched = db.get(result.matched_paper_id) if result.matched_paper_id else None
@@ -279,13 +284,7 @@ def _apply_screen(rec: PaperRecord, db: PaperDB) -> str:
         rec.target_country = detected_country.capitalize()
     gen_fit, n_gen, _, _ = assess_generations(text_low)
     # 検出された世代グループ名を記録
-    from .screener import _rules, _count_hits
-
-    groups = []
-    for gname, kws in _rules().get("generations", {}).items():
-        if _count_hits(text_low, kws) >= 1:
-            groups.append(gname)
-    rec.generation_groups = "; ".join(groups)
+    rec.generation_groups = "; ".join(detected_generation_groups(text_low))
     rec.number_of_generations = n_gen
     rec.document_type = result.document_type
     rec.original_language = detect_language(text)
@@ -295,11 +294,11 @@ def _apply_screen(rec: PaperRecord, db: PaperDB) -> str:
     if result.translation_required:
         rec.analysis_language = "en"  # 最終分析は英語
 
-    # dedupe で確定済みの duplicate / needs_review は維持
-    if rec.screening_status not in (ScreeningStatus.duplicate, ScreeningStatus.needs_review):
+    # dedupe で確定済みの duplicate / same_dataset(needs_review+warning) は維持
+    dedupe_locked = rec.screening_status == ScreeningStatus.duplicate or rec.same_dataset_warning
+    if not dedupe_locked:
         rec.screening_status = result.decision
-        rec.rejection_reason = "" if result.decision == ScreeningStatus.accepted else \
-            (rec.rejection_reason or _first_reason(result))
+        rec.rejection_reason = "" if result.decision == ScreeningStatus.accepted else result.primary_reason
     else:
         # 重複側にも screening の根拠を notes として残す
         note = f"[screen] decision={result.decision.value}; cat={result.category_fit}"
@@ -310,13 +309,6 @@ def _apply_screen(rec: PaperRecord, db: PaperDB) -> str:
 
     db.upsert(rec)
     return rec.screening_status.value
-
-
-def _first_reason(result) -> str:
-    if result.decision == ScreeningStatus.accepted:
-        return ""
-    # supplementary/rejected の根拠を1つ返す
-    return result.reasons[-1] if result.reasons else ""
 
 
 def cmd_screen(args: argparse.Namespace) -> int:
@@ -410,6 +402,30 @@ def cmd_export(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
+# report
+# ---------------------------------------------------------------------------
+def cmd_report(args: argparse.Namespace) -> int:
+    from .reporter import build_console_summary, build_markdown, write_report
+
+    db = PaperDB()
+    records = db.all()
+    db.close()
+    if not records:
+        print("レコードがありません。先に ingest / dedupe-all / screen-all を実行してください。")
+        return 0
+
+    if args.format in ("console", "both"):
+        print(build_console_summary(records))
+    if args.full:
+        print()
+        print(build_markdown(records))
+    if args.format in ("md", "both"):
+        out = write_report(fmt="md")
+        print(f"\nMarkdown レポート: {out}")
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # search
 # ---------------------------------------------------------------------------
 def cmd_search(args: argparse.Namespace) -> int:
@@ -486,6 +502,12 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("export", help="台帳出力")
     sp.add_argument("--format", default="xlsx", choices=["xlsx", "csv"])
     sp.set_defaults(func=cmd_export)
+
+    sp = sub.add_parser("report", help="重複判定・採否の確認レポート (コンソール/Markdown)")
+    sp.add_argument("--format", default="both", choices=["console", "md", "both"],
+                    help="console=要約のみ / md=Markdownファイル / both=両方 (既定)")
+    sp.add_argument("--full", action="store_true", help="コンソールにも全文 (区分別一覧) を表示")
+    sp.set_defaults(func=cmd_report)
 
     sp = sub.add_parser("search", help="OpenAlex 検索 (candidate 保存)")
     sp.add_argument("--country", default="TH")

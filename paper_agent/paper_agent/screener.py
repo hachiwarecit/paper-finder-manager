@@ -16,9 +16,9 @@ ANTHROPIC_API_KEY があれば LLM 補助も可能だが、無くてもルール
 """
 from __future__ import annotations
 
-from .extractor import select_analysis_sections
+from .extractor import guess_title, select_analysis_sections
 from .models import DocumentType, PaperRecord, ScreeningResult, ScreeningStatus
-from .utils import detect_language, get_logger, load_config
+from .utils import detect_language, get_logger, load_config, normalize_title
 
 logger = get_logger()
 
@@ -57,10 +57,23 @@ def assess_country(rec: PaperRecord, text_low: str) -> tuple[bool, str, list[str
 
     th_hits = _count_hits(text_low, rules.get("thailand", {}).get("keywords", []))
     vn_hits = _count_hits(text_low, rules.get("vietnam", {}).get("keywords", []))
-    if detected is None:
-        if th_hits == 0 and vn_hits == 0:
-            return False, "unknown", ["対象国 (Thailand/Vietnam) を本文中に確認できない。"]
+    if detected is None and (th_hits or vn_hits):
         detected = "thailand" if th_hits >= vn_hits else "vietnam"
+        reasons.append(f"{detected.capitalize()} が研究対象国の文脈として検出された。")
+        return True, detected, reasons
+
+    if detected is None:
+        # 本文から判定できない場合、取り込み時の国ラベル(TH/VN)を弱い手掛かりとして使う。
+        # (英語キーワードが効かないタイ語/ベトナム語本文を誤って除外しないため)
+        label = (rec.country or "").upper()
+        if label in ("TH", "VN"):
+            detected = "thailand" if label == "TH" else "vietnam"
+            reasons.append(
+                f"本文からは国を確定できないが、取り込み時の国ラベル {label} を採用。"
+                "（要人手確認：調査対象国であって著者所属国でないこと）"
+            )
+            return True, detected, reasons
+        return False, "unknown", ["対象国 (Thailand/Vietnam) を本文中に確認できない。"]
 
     reasons.append(f"{detected.capitalize()} が研究対象国の文脈として検出された。")
     return True, detected, reasons
@@ -192,6 +205,50 @@ def assess_language(rec: PaperRecord, text: str) -> tuple[str, bool, list[str]]:
     return lang, translation_required, warnings
 
 
+def detected_generation_groups(text_low: str) -> list[str]:
+    """テキストから検出された世代グループ名を返す。"""
+    groups = []
+    for gname, kws in _rules().get("generations", {}).items():
+        if _count_hits(text_low, kws) >= 1:
+            groups.append(gname)
+    return groups
+
+
+def enrich_record(rec: PaperRecord, text: str) -> PaperRecord:
+    """採否を決めずに、テキストから判る軽量メタデータをレコードへ反映する。
+
+    dedupe を screen より前に走らせる標準フローでも、対象国・世代区分・言語が
+    重複判定に使えるようにするためのもの。authors/sample_size など本文から
+    確実に取れない項目は触らない (推測しない)。
+    """
+    text = text or ""
+    text_low = text.lower()
+
+    if rec.target_country in (None, "", "unknown"):
+        ok, detected, _ = assess_country(rec, text_low)
+        if ok and detected in ("thailand", "vietnam"):
+            rec.target_country = detected.capitalize()
+
+    groups = detected_generation_groups(text_low)
+    if groups and not rec.generation_groups:
+        rec.generation_groups = "; ".join(groups)
+        _, n_gen, _, _ = assess_generations(text_low)
+        rec.number_of_generations = n_gen
+
+    if rec.original_language in (None, "", "unknown"):
+        rec.original_language = detect_language(text)
+
+    if rec.document_type == DocumentType.unknown:
+        rec.document_type = assess_document_type(text_low)
+
+    if not rec.title:
+        tg = guess_title(text)
+        if tg:
+            rec.title = tg
+            rec.normalized_title = normalize_title(tg)
+    return rec
+
+
 # ---------------------------------------------------------------------------
 # 統合判定
 # ---------------------------------------------------------------------------
@@ -228,6 +285,14 @@ def screen(rec: PaperRecord, text: str, *, results_discussion_mixed: bool | None
     elif doc_type == DocumentType.teaching_case:
         decision = ScreeningStatus.supplementary
         reject_reason = "Teaching Case のため主分析には含めず補助文献とする。"
+    elif translation_required:
+        # タイ語/ベトナム語の原文は、英語キーワードでは職場/カテゴリを正しく
+        # 判定できない。誤って除外せず、翻訳後に再判定するため needs_review にする。
+        decision = ScreeningStatus.needs_review
+        reject_reason = (
+            "原文がタイ語/ベトナム語。英訳後に本判定を行うため要確認 "
+            "(translation_required=True)。"
+        )
     elif doc_type == DocumentType.conference_abstract or not fulltext_fit:
         # 要旨のみ
         if not fulltext_fit:
@@ -271,6 +336,7 @@ def screen(rec: PaperRecord, text: str, *, results_discussion_mixed: bool | None
         duplicate_fit=True,  # 重複は duplicate_checker が別途判定
         document_type=doc_type,
         translation_required=translation_required,
+        primary_reason=reject_reason,
         reasons=reasons,
         evidence_sections=evidence,
         warnings=warnings,

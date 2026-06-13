@@ -87,6 +87,24 @@ def test_thai_language_requires_translation():
         "พนักงานในองค์กรไทยมีหลายเจเนอเรชัน เบบี้บูมเมอร์ เจเนอเรชันเอ็กซ์ และเจเนอเรชันวาย "
         "บทนำ ประเทศไทยมีแรงงานหลายเจเนอเรชันในบริษัทและองค์กร "
     ) * 10
-    res = screen(_rec(), thai_text)
+    res = screen(_rec(country="TH"), thai_text)
     assert res.translation_required is True
     assert any("translation is required" in w for w in res.warnings)
+    # タイ語原文は誤って除外せず、翻訳後に再判定するため needs_review にする
+    assert res.decision == ScreeningStatus.needs_review
+
+
+def test_country_label_fallback_when_text_has_no_country_keyword():
+    # 本文に国名が無くても、取り込み時の国ラベル(TH/VN)で country_fit を満たす
+    text = (
+        "Abstract\nThis paper compares Generation X and Generation Y employees in companies.\n\n"
+        "Introduction\nA multigenerational workforce in organizations and firms is studied. "
+        "Baby Boomers, Generation X and Generation Y employees work together. Work values and "
+        "motivation across generations in the workplace are compared among employees.\n\n"
+        "Discussion\nGenerations differ in work values across companies and organizations.\n\n"
+        "Conclusion\nGenerational diversity matters in the workplace.\n"
+    ) * 3
+    res_no_label = screen(_rec(country="unknown"), text)
+    assert res_no_label.country_fit is False
+    res_label = screen(_rec(country="TH"), text)
+    assert res_label.country_fit is True

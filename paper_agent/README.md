@@ -26,7 +26,8 @@ KH Coder によるテキスト分析を前提に、論文 PDF/TXT を取り込�
 | 前処理 | `clean` | KH Coder 用に整形した `*_cleaned.txt` を出力 |
 | 翻訳準備 | `prepare-translation` | 原文・翻訳プロンプト・翻訳枠・ログを保存 |
 | 台帳出力 | `export` | Excel（8シート）/ CSV を出力 |
-| 検索 | `search` | OpenAlex から候補を取得（candidate として保存） |
+| 確認レポート | `report` | 区分別の確認レポートをコンソール / Markdown 出力 |
+| 検索 | `search` | OpenAlex から候補を取得（candidate として保存）※Phase 3 |
 
 ### 分析対象 6 カテゴリ
 
@@ -107,6 +108,91 @@ python -m paper_agent search --country TH --category 5 --limit 20
 
 > パスに日本語が含まれていても処理できます。文字コードはすべて UTF-8 です。
 > 途中で 1 件エラーが出ても、全体処理は止まらず次の論文に進みます（ログに記録）。
+
+---
+
+## 3.5 実データ（既存 PDF/TXT）での検証手順
+
+検索（OpenAlex/Unpaywall/ダウンロード）にはまだ進まず、**手元にある既存の
+タイ・ベトナム論文 PDF/TXT** を使って、重複判定と採否判定の精度を確認する手順です。
+
+### 手順
+
+1. **ファイルを置く**
+   `data/02_downloaded/` 以下に PDF または TXT を置きます。
+   国ごとに `--country` を分けたい場合は、国別フォルダに分けると便利です。
+
+   ```
+   data/02_downloaded/
+   ├── TH/   ← タイの論文 (PDF/TXT)
+   └── VN/   ← ベトナムの論文 (PDF/TXT)
+   ```
+
+   > KH Coder 用に整形済みの cleaned テキスト（例: `vietnam1_khcoder_cleaned.txt`）も
+   > そのまま TXT として取り込めます。`.pdf` / `.txt` / `.text` / `.md` に対応。
+
+2. **一括処理を実行**
+
+   ```powershell
+   python -m paper_agent init                                    # 1回だけでOK
+   python -m paper_agent ingest --input "./data/02_downloaded/TH" --country TH
+   python -m paper_agent ingest --input "./data/02_downloaded/VN" --country VN
+   python -m paper_agent dedupe-all
+   python -m paper_agent screen-all
+   python -m paper_agent export --format xlsx
+   python -m paper_agent report                                  # 区分別の確認レポート
+   ```
+
+   フォルダを分けない場合は 1 回の `ingest` でも構いません（`--country` は整理用ラベル。
+   実際の調査対象国は本文から推定し `target_country` に入ります）。
+
+   > `ingest` はテキスト抽出まで自動で行うため、通常 `extract` を個別に呼ぶ必要はありません。
+   > 抽出をやり直したいときだけ `python -m paper_agent extract --paper-id <ID>` を使います。
+
+3. **確認レポートを見る**
+
+   ```powershell
+   python -m paper_agent report --format console   # コンソールに要約だけ
+   python -m paper_agent report --full             # コンソールに区分別の全一覧
+   python -m paper_agent report --format md        # data/10_exports/report.md を出力
+   ```
+
+   レポートは次の 6 区分（＋翻訳が必要な論文一覧）で出力されます。
+
+   - **完全重複** … DOI / 本文ハッシュ / 正規化タイトル一致など
+   - **同一データの可能性あり** … タイトルは違うが同一研究の疑い（要人手確認）
+   - **主分析候補（accepted）**
+   - **補助文献（supplementary）** … 単一世代 / 要旨のみ / Teaching Case など
+   - **除外（rejected）**
+   - **要確認（needs_review）** … タイ語/ベトナム語原文・Results/Discussion 混在など
+
+### 判定の確認ポイント（誤判定が起きないこと）
+
+実データで以下が守られているかをレポート/Excel で確認してください。
+
+| 確認項目 | 期待される区分 |
+|----------|----------------|
+| 単一世代研究（Gen Z のみ等） | 主分析に入らず **補助文献** |
+| 要旨のみ（本文なし・学会要旨） | 主分析に入らず **補助文献** |
+| Teaching Case / 授業用ケース | 主分析に入らず **補助文献** |
+| タイ語・ベトナム語の原文 | **要確認**（`original_language=th/vi`、翻訳が必要な論文一覧に掲載） |
+| 既知の重複ペア | **完全重複** または **同一データの可能性あり** |
+
+> タイ語/ベトナム語の原文は、英語キーワードでは職場文脈やカテゴリを正しく判定できないため、
+> 誤って除外せず **needs_review（翻訳要）** に回します。英訳テキストを
+> `09_translated/<paper_id>/translated_en.txt` に入れて再取り込みすれば、英語として本判定できます。
+
+### メタデータについて（重要）
+
+`dedupe-all` を `screen-all` の前に実行する標準フローでは、取り込み直後の段階で
+**対象国・世代区分・言語** は本文から自動補完されます。一方、**著者名・標本数** は
+PDF から確実に取り出すのが難しいため自動では埋めません（推測しない方針）。
+
+「**同一データの可能性あり**（学位論文⇔雑誌版など、タイトルが違う同一研究）」の検出は、
+著者名・標本数が入っていると精度が大きく上がります。これらは
+`db/papers.sqlite`（または Excel を編集して再取り込み）で補ってから `dedupe-all` を
+再実行すると、より確実に検出できます。完全重複・版違い（同一タイトル/同一本文）は
+メタデータが無くても検出されます。
 
 ---
 

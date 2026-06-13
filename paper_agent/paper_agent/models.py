@@ -114,6 +114,7 @@ class ScreeningResult(BaseModel):
     duplicate_fit: bool = True               # True=重複問題なし
     document_type: DocumentType = DocumentType.unknown
     translation_required: bool = False
+    primary_reason: str = ""                  # 判定を決めた主要因 (台帳の rejection_reason 用)
     reasons: list[str] = Field(default_factory=list)
     evidence_sections: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)

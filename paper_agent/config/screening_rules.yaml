@@ -16,6 +16,9 @@ country:
       - thai company
       - thai employees
       - eastern economic corridor
+      # タイ語表記 (native script)
+      - ประเทศไทย
+      - ไทย
   vietnam:
     keywords:
       - vietnam
@@ -24,6 +27,9 @@ country:
       - ho chi minh
       - vietnam listed companies
       - fdi enterprises in vietnam
+      # ベトナム語表記 (native script)
+      - việt nam
+      - việt
 
 # ------------------------------------------------------------------
 # 職場・組織文脈 (workplace fit)
