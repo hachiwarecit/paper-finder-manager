@@ -62,9 +62,18 @@ def ingest_file(path: str | Path, country: str, db: PaperDB, *,
 
         is_pdf = path.suffix.lower() == ".pdf"
         seed = seed or {}
+        # 候補メタデータ由来の対象国 (証拠ベースのみ) を引き継ぐ。
+        seed_tc = seed.get("target_country", "unknown") or "unknown"
+        seed_tc_source = seed.get("target_country_source", "unknown") or "unknown"
+        if seed_tc in ("Thailand", "Vietnam") and seed_tc_source in ("title", "abstract", "full_text", "metadata"):
+            tc, tc_source = seed_tc, "metadata"  # 論文から見ると候補メタ由来
+            tc_evidence = seed.get("target_country_evidence", "") or "from candidate metadata"
+        else:
+            tc, tc_source, tc_evidence = "unknown", "unknown", ""
         rec = PaperRecord(
             paper_id=pid,
             country=country if country in COUNTRY_NAME else "unknown",
+            query_country=(seed.get("query_country") or country or "unknown"),
             category=seed.get("category", "unknown"),
             title=seed.get("title", "") or "",
             authors=seed.get("authors", "") or "",
@@ -72,7 +81,9 @@ def ingest_file(path: str | Path, country: str, db: PaperDB, *,
             source_name=seed.get("source_name", "local_ingest"),
             source_url=seed.get("source_url") or None,
             pdf_url=seed.get("pdf_url") or None,
-            target_country=seed.get("target_country", "unknown") or "unknown",
+            target_country=tc,
+            target_country_source=tc_source,
+            target_country_evidence=tc_evidence,
             local_pdf_path=str(path) if is_pdf else None,
             local_text_path=str(text_path) if text_path else (str(path) if not is_pdf else None),
             original_language=detect_language(text),

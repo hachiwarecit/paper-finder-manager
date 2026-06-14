@@ -44,39 +44,68 @@ def _count_hits(text_low: str, keywords) -> int:
     return sum(1 for kw in (keywords or []) if kw and kw.lower() in text_low)
 
 
+def _first_hit(text_low: str, keywords) -> str | None:
+    for kw in (keywords or []):
+        if kw and kw.lower() in text_low:
+            return kw
+    return None
+
+
+def detect_target_country(title: str = "", abstract: str = "",
+                          full_text: str = "") -> tuple[str, str, str]:
+    """文書の証拠から調査対象国を判定する。
+
+    返り値: (target_country, source, evidence)
+      target_country: "Thailand" / "Vietnam" / "unknown"
+      source: "title" / "abstract" / "full_text" / "unknown"
+      evidence: 根拠となった語と出所 (例: "'thailand' in title")
+
+    重要: 検索クエリに国名が入っているだけでは判定しない (本文側の証拠のみ)。
+    """
+    rules = _rules().get("country", {})
+    th_kws = rules.get("thailand", {}).get("keywords", [])
+    vn_kws = rules.get("vietnam", {}).get("keywords", [])
+    for source, text in (("title", title), ("abstract", abstract), ("full_text", full_text)):
+        if not text:
+            continue
+        low = text.lower()
+        th_hit = _first_hit(low, th_kws)
+        vn_hit = _first_hit(low, vn_kws)
+        if th_hit or vn_hit:
+            th_n = _count_hits(low, th_kws)
+            vn_n = _count_hits(low, vn_kws)
+            if th_n >= vn_n and th_hit:
+                return "Thailand", source, f"'{th_hit}' in {source}"
+            if vn_hit:
+                return "Vietnam", source, f"'{vn_hit}' in {source}"
+    return "unknown", "unknown", ""
+
+
 # ---------------------------------------------------------------------------
 # 各観点の判定
 # ---------------------------------------------------------------------------
-def assess_country(rec: PaperRecord, text_low: str) -> tuple[bool, str, list[str]]:
-    rules = _rules().get("country", {})
-    reasons: list[str] = []
-    detected = None
-    # 既にレコードに target_country があればそれを優先
-    if rec.target_country and rec.target_country.lower() in ("thailand", "vietnam", "th", "vn"):
-        detected = "thailand" if rec.target_country.lower() in ("thailand", "th") else "vietnam"
+def assess_country(rec: PaperRecord, text: str) -> tuple[bool, str, str, str, list[str]]:
+    """(fit, country, source, evidence, reasons) を返す。
 
-    th_hits = _count_hits(text_low, rules.get("thailand", {}).get("keywords", []))
-    vn_hits = _count_hits(text_low, rules.get("vietnam", {}).get("keywords", []))
-    if detected is None and (th_hits or vn_hits):
-        detected = "thailand" if th_hits >= vn_hits else "vietnam"
-        reasons.append(f"{detected.capitalize()} が研究対象国の文脈として検出された。")
-        return True, detected, reasons
+    検索国ラベルは使わない。本文 (full_text) の証拠のみで判定する。
+    本文に証拠が無くても、候補メタデータ由来 (source=metadata) の対象国が既にあれば尊重する。
+    fit=True になるのは country が Thailand/Vietnam かつ source が
+    title/abstract/full_text/metadata のときだけ (query_only / unknown は不可)。
+    """
+    country, source, evidence = detect_target_country(full_text=text)
+    if country == "unknown" and rec.target_country in ("Thailand", "Vietnam") \
+            and rec.target_country_source in ("title", "abstract", "full_text", "metadata"):
+        country, source, evidence = rec.target_country, rec.target_country_source, rec.target_country_evidence
 
-    if detected is None:
-        # 本文から判定できない場合、取り込み時の国ラベル(TH/VN)を弱い手掛かりとして使う。
-        # (英語キーワードが効かないタイ語/ベトナム語本文を誤って除外しないため)
-        label = (rec.country or "").upper()
-        if label in ("TH", "VN"):
-            detected = "thailand" if label == "TH" else "vietnam"
-            reasons.append(
-                f"本文からは国を確定できないが、取り込み時の国ラベル {label} を採用。"
-                "（要人手確認：調査対象国であって著者所属国でないこと）"
-            )
-            return True, detected, reasons
-        return False, "unknown", ["対象国 (Thailand/Vietnam) を本文中に確認できない。"]
-
-    reasons.append(f"{detected.capitalize()} が研究対象国の文脈として検出された。")
-    return True, detected, reasons
+    valid_source = source in ("title", "abstract", "full_text", "metadata")
+    fit = country in ("Thailand", "Vietnam") and valid_source
+    if fit:
+        reasons = [f"{country} が研究対象国として {source} で確認された (根拠: {evidence})。"]
+    elif country in ("Thailand", "Vietnam"):
+        reasons = [f"{country} らしいが証拠が弱く ({source}) N には使えない。"]
+    else:
+        reasons = ["対象国 (Thailand/Vietnam) を本文中に確認できない。"]
+    return fit, country, source, evidence, reasons
 
 
 def assess_workplace(text_low: str) -> tuple[bool, list[str]]:
@@ -225,9 +254,11 @@ def enrich_record(rec: PaperRecord, text: str) -> PaperRecord:
     text_low = text.lower()
 
     if rec.target_country in (None, "", "unknown"):
-        ok, detected, _ = assess_country(rec, text_low)
-        if ok and detected in ("thailand", "vietnam"):
-            rec.target_country = detected.capitalize()
+        country, source, evidence = detect_target_country(full_text=text)
+        if country in ("Thailand", "Vietnam"):
+            rec.target_country = country
+            rec.target_country_source = source
+            rec.target_country_evidence = evidence
 
     groups = detected_generation_groups(text_low)
     if groups and not rec.generation_groups:
@@ -257,7 +288,7 @@ def screen(rec: PaperRecord, text: str, *, results_discussion_mixed: bool | None
     text = text or ""
     text_low = text.lower()
 
-    country_fit, detected_country, country_reasons = assess_country(rec, text_low)
+    country_fit, detected_country, country_source, country_evidence, country_reasons = assess_country(rec, text)
     workplace_fit, workplace_reasons = assess_workplace(text_low)
     generation_fit, n_gen, gen_reasons, gen_warnings = assess_generations(text_low)
     fulltext_fit, ft_reasons, evidence = assess_fulltext(rec, text)
@@ -337,6 +368,9 @@ def screen(rec: PaperRecord, text: str, *, results_discussion_mixed: bool | None
         document_type=doc_type,
         translation_required=translation_required,
         primary_reason=reject_reason,
+        target_country=detected_country,
+        target_country_source=country_source,
+        target_country_evidence=country_evidence,
         reasons=reasons,
         evidence_sections=evidence,
         warnings=warnings,

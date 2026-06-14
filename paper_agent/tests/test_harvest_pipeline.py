@@ -78,7 +78,7 @@ def test_download_only_processes_approved(tmp_path, monkeypatch):
     assert attempted == [cand.candidate_id]
     # pending はダウンロードされていない
     pendings = db.candidates_by_status("pending")
-    assert all(c.download_status == "" for c in pendings)
+    assert all(c.download_status == "not_attempted" for c in pendings)
     db.close()
 
 

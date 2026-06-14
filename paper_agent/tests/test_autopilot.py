@@ -39,7 +39,9 @@ def _fetch_no_pdf(query, limit):
 
 def _qualifying(pid, **kw):
     base = dict(screening_status=ScreeningStatus.accepted, full_text_available=True,
-                number_of_generations=2, target_country="Thailand", workplace_fit=True,
+                number_of_generations=2, target_country="Thailand",
+                target_country_source="abstract", target_country_evidence="'thailand' in abstract",
+                workplace_fit=True,
                 doi=f"10.acc/{pid}", category="category_5", document_type=DocumentType.journal_article,
                 title=f"Title {pid}", normalized_title=normalize_title(f"Title {pid}"))
     base.update(kw)
@@ -55,7 +57,7 @@ def test_dryrun_does_not_download_or_create_papers(tmp_path):
     # 候補は保存されるが、論文は作られない / ダウンロードしていない
     assert db.candidate_count() > 0
     assert db.count() == 0
-    assert all(c.download_status == "" for c in db.all_candidates())
+    assert all(c.download_status == "not_attempted" for c in db.all_candidates())
     assert res.final_n == 0
     db.close()
 

@@ -66,7 +66,10 @@ class PaperRecord(BaseModel):
     analysis_language: str = "en"
     full_text_available: bool = False
 
-    target_country: str = "unknown"          # 調査対象国 (著者所属ではない)
+    target_country: str = "unknown"          # 調査対象国 (著者所属でも検索国でもない、文書から確認した国)
+    target_country_source: str = "unknown"   # title/abstract/full_text/metadata/query_only/unknown
+    target_country_evidence: str = ""         # 対象国を裏付ける根拠 (本文中の語など)
+    query_country: str = "unknown"            # 検索時に指定した国 (TH/VN)。検索管理用。N判定には使わない
     organization_context: str = "unknown"    # 職場文脈の説明
     workplace_fit: bool = False              # 職場・組織文脈の有無 (N判定に使用)
     generation_groups: str = ""              # 検出された世代グループ (";" 区切り)
@@ -115,6 +118,9 @@ class ScreeningResult(BaseModel):
     duplicate_fit: bool = True               # True=重複問題なし
     document_type: DocumentType = DocumentType.unknown
     translation_required: bool = False
+    target_country: str = "unknown"
+    target_country_source: str = "unknown"
+    target_country_evidence: str = ""
     primary_reason: str = ""                  # 判定を決めた主要因 (台帳の rejection_reason 用)
     reasons: list[str] = Field(default_factory=list)
     evidence_sections: list[str] = Field(default_factory=list)
@@ -174,8 +180,11 @@ class Candidate(BaseModel):
     pdf_url: Optional[str] = None
 
     country: str = "unknown"                 # 整理用ラベル (TH/VN)
+    query_country: str = "unknown"           # 検索時に指定した国 (TH/VN)。N判定には使わない
     category: str = "unknown"                # 指定カテゴリ (category_1..6)
-    target_country: str = "unknown"          # 本文/抄録から推定した調査対象国
+    target_country: str = "unknown"          # 本文/抄録/タイトルから確認した実際の調査対象国
+    target_country_source: str = "unknown"   # title/abstract/full_text/metadata/query_only/unknown
+    target_country_evidence: str = ""         # 対象国を裏付ける根拠 (タイトル/抄録中の語など)
 
     generation_keywords: str = ""            # 検出した世代関連語 (";" 区切り)
     workplace_keywords: str = ""             # 検出した職場文脈語
@@ -191,10 +200,16 @@ class Candidate(BaseModel):
     same_dataset_warning: bool = False
     notes: str = ""
 
+    # 自動承認の判断記録
+    auto_approve_reason: str = ""             # 承認された場合の理由
+    auto_approve_blockers: str = ""           # 承認されなかった理由 (";" 区切り)
+
     # ダウンロード試行の記録
-    download_status: str = ""                # "" / success / failed / skipped
+    download_status: str = "not_attempted"   # not_attempted/attempted/success/failed/skipped
     download_error: str = ""
     attempted_url: str = ""
+    downloaded_path: str = ""
+    download_timestamp: str = ""
     timestamp: str = ""
 
     created_at: str = Field(default_factory=now_iso)

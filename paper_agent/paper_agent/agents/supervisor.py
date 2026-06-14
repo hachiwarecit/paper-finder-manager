@@ -72,27 +72,52 @@ class SupervisorAgent:
         self.qa = QualityAssuranceAgent()
 
     # ------------------------------------------------------------------
-    # 自動承認 (section 5)
+    # 自動承認 (section 5) — すべての条件を満たした候補だけ承認。
+    # 承認されなかった候補には auto_approve_blockers を必ず記録する。
     # ------------------------------------------------------------------
+    def _auto_approve_blockers(self, c) -> list[str]:
+        blockers: list[str] = []
+        if c.duplicate_status.value != "new_candidate":
+            blockers.append(f"duplicate_status={c.duplicate_status.value}")
+        if c.target_country not in ("Thailand", "Vietnam"):
+            blockers.append("target_country_not_TH_VN")
+        if c.target_country_source not in ("title", "abstract", "full_text", "metadata"):
+            blockers.append(f"target_country_source={c.target_country_source}")
+        if not (c.target_country_evidence or "").strip():
+            blockers.append("target_country_evidence_empty")
+        if not _has_multigen_signal(c):
+            blockers.append("generation_evidence_insufficient")
+        if not c.workplace_keywords:
+            blockers.append("workplace_evidence_missing")
+        if not c.pdf_url:
+            blockers.append("pdf_url_missing")
+        if c.legality_note not in LEGAL_NOTES_OK:
+            blockers.append("legality_unknown")
+        if c.document_type_guess in ("teaching_case", "conference_abstract"):
+            blockers.append(f"document_type={c.document_type_guess}")
+        if c.candidate_score < self.config.auto_approve_threshold:
+            blockers.append(f"candidate_score<{self.config.auto_approve_threshold}")
+        return blockers
+
     def _auto_approve(self, candidate_ids: list[str], db: PaperDB) -> list[str]:
         approved = []
         for cid in candidate_ids:
             c = db.get_candidate(cid)
             if c is None:
                 continue
-            if (
-                c.candidate_score >= self.config.auto_approve_threshold
-                and c.duplicate_status.value == "new_candidate"
-                and c.target_country in ("Thailand", "Vietnam")
-                and _has_multigen_signal(c)
-                and bool(c.workplace_keywords)
-                and bool(c.pdf_url)
-                and c.legality_note in LEGAL_NOTES_OK
-                and c.document_type_guess not in ("teaching_case", "conference_abstract")
-            ):
+            blockers = self._auto_approve_blockers(c)
+            if not blockers:
                 c.candidate_status = CandidateStatus.approved_for_download
-                db.upsert_candidate(c)
+                c.auto_approve_reason = (
+                    f"score={c.candidate_score} target={c.target_country}"
+                    f"({c.target_country_source}) legal={c.legality_note}"
+                )
+                c.auto_approve_blockers = ""
                 approved.append(cid)
+            else:
+                c.auto_approve_blockers = "; ".join(blockers)
+                c.auto_approve_reason = ""
+            db.upsert_candidate(c)
         return approved
 
     # ------------------------------------------------------------------
@@ -110,6 +135,9 @@ class SupervisorAgent:
             seed = {
                 "doi": c.doi, "source_url": c.source_url, "pdf_url": c.pdf_url,
                 "category": c.category, "target_country": c.target_country,
+                "target_country_source": c.target_country_source,
+                "target_country_evidence": c.target_country_evidence,
+                "query_country": c.query_country,
                 "title": c.title, "authors": c.authors, "candidate_id": c.candidate_id,
                 "source_name": c.source_name,
             }
@@ -253,8 +281,40 @@ class SupervisorAgent:
         s = summarize(papers)
         cands = db.all_candidates()
         harvest_total = len(cands)
-        dl_success = sum(1 for c in cands if c.download_status == "success")
-        dl_failed = sum(1 for c in cands if c.download_status == "failed")
+
+        def _count_by(attr):
+            d: dict = {}
+            for c in cands:
+                v = getattr(c, attr)
+                v = v.value if hasattr(v, "value") else v
+                d[v] = d.get(v, 0) + 1
+            return d
+
+        status_counts = _count_by("candidate_status")
+        dlstatus_counts = _count_by("download_status")
+        tcsource_counts = _count_by("target_country_source")
+        dl_success = dlstatus_counts.get("success", 0)
+        dl_failed = dlstatus_counts.get("failed", 0)
+        dl_skipped = dlstatus_counts.get("skipped", 0)
+        dl_attempted = dl_success + dl_failed + dlstatus_counts.get("attempted", 0)
+        auto_approved = status_counts.get("approved_for_download", 0) + \
+            sum(1 for c in cands if c.auto_approve_reason)
+
+        # download_attempted=0 のときの理由内訳 (auto_approve_blockers を集計)
+        blocker_counts: dict[str, int] = {}
+        for c in cands:
+            for b in (c.auto_approve_blockers or "").split("; "):
+                b = b.strip()
+                if b:
+                    key = b.split("=")[0] if "=" in b else b
+                    blocker_counts[key] = blocker_counts.get(key, 0) + 1
+        # download skip 理由
+        skip_reasons: dict[str, int] = {}
+        for c in cands:
+            if c.download_status == "skipped" and c.download_error:
+                key = c.download_error.split(":")[0]
+                skip_reasons[key] = skip_reasons.get(key, 0) + 1
+
         lines: list[str] = []
         lines.append("# autopilot summary")
         lines.append("")
@@ -287,14 +347,48 @@ class SupervisorAgent:
         lines.append("## 集計")
         lines.append("")
         lines.append(f"- harvest 総数 (候補): {harvest_total}")
-        lines.append(f"- download 成功数: {dl_success}")
-        lines.append(f"- download 失敗数: {dl_failed}")
+        lines.append(f"- candidate 総数: {harvest_total}")
+        lines.append(f"- auto_approved_count: {auto_approved}")
+        lines.append(f"- download_attempted_count: {dl_attempted}")
+        lines.append(f"- download_success_count: {dl_success}")
+        lines.append(f"- download_failed_count: {dl_failed}")
+        lines.append(f"- download_skipped_count: {dl_skipped}")
         lines.append(f"- 重複除外数 (duplicate): {s.excluded_duplicates}")
         lines.append(f"- same_dataset_possible 数: {s.same_dataset_possible}")
         lines.append(f"- supplementary 数: {s.supplementary}")
         lines.append(f"- rejected 数: {s.rejected}")
         lines.append(f"- needs_review 数: {s.needs_review}")
         lines.append("")
+        lines.append("### candidate_status 別の件数")
+        lines.append("")
+        for k, v in sorted(status_counts.items()):
+            lines.append(f"- {k}: {v}")
+        lines.append("")
+        lines.append("### download_status 別の件数")
+        lines.append("")
+        for k, v in sorted(dlstatus_counts.items()):
+            lines.append(f"- {k}: {v}")
+        lines.append("")
+        lines.append("### target_country_source 別の候補数")
+        lines.append("")
+        for k, v in sorted(tcsource_counts.items()):
+            lines.append(f"- {k}: {v}")
+        lines.append("")
+        if dl_attempted == 0:
+            lines.append("### download_attempted=0 の理由 (auto_approve がブロックされた内訳)")
+            lines.append("")
+            if blocker_counts:
+                for k, v in sorted(blocker_counts.items(), key=lambda kv: -kv[1]):
+                    lines.append(f"- {k}: {v} 件")
+            else:
+                lines.append("- (候補なし / 承認ブロッカーなし)")
+            lines.append("")
+        if skip_reasons:
+            lines.append("### download_skipped_reasons")
+            lines.append("")
+            for k, v in sorted(skip_reasons.items(), key=lambda kv: -kv[1]):
+                lines.append(f"- {k}: {v} 件")
+            lines.append("")
         lines.append("## 実行済み検索クエリ")
         lines.append("")
         for h in db.all_searches():

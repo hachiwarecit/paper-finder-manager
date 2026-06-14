@@ -21,6 +21,8 @@ def _ok(pid="N1", **kw):
         full_text_available=True,
         number_of_generations=2,
         target_country="Thailand",
+        target_country_source="abstract",
+        target_country_evidence="'thailand' in abstract",
         workplace_fit=True,
         category="category_5",
     )
@@ -71,6 +73,19 @@ def test_wrong_country_not_counted():
 
 def test_no_workplace_fit_not_counted():
     assert is_analysis_n(_ok(workplace_fit=False)) is False
+
+
+def test_query_only_country_source_not_counted():
+    # 検索クエリ由来だけの国判定は N に入れない
+    assert is_analysis_n(_ok(target_country_source="query_only")) is False
+
+
+def test_unknown_country_source_not_counted():
+    assert is_analysis_n(_ok(target_country_source="unknown")) is False
+
+
+def test_empty_country_evidence_not_counted():
+    assert is_analysis_n(_ok(target_country_evidence="")) is False
 
 
 def test_summary_counts_only_qualifying():

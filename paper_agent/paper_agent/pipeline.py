@@ -15,7 +15,6 @@ from .duplicate_checker import best_match
 from .extractor import extract_text, guess_title
 from .models import DuplicateType, PaperRecord, ScreeningStatus
 from .screener import (
-    assess_country,
     assess_generations,
     detected_generation_groups,
     enrich_record,
@@ -89,9 +88,17 @@ def apply_screen(rec: PaperRecord, db: PaperDB) -> str:
     result = screen(rec, text)
 
     text_low = text.lower()
-    _, detected_country, _ = assess_country(rec, text_low)
-    if detected_country in ("thailand", "vietnam"):
-        rec.target_country = detected_country.capitalize()
+    # 対象国は検索国ラベルではなく、本文の証拠 (または候補メタ由来) で決める
+    if result.target_country in ("Thailand", "Vietnam") and \
+            result.target_country_source in ("title", "abstract", "full_text", "metadata"):
+        rec.target_country = result.target_country
+        rec.target_country_source = result.target_country_source
+        rec.target_country_evidence = result.target_country_evidence
+    elif rec.target_country not in ("Thailand", "Vietnam"):
+        # 証拠が無ければ unknown のまま (query由来で Thailand と誤設定しない)
+        rec.target_country = "unknown"
+        rec.target_country_source = "unknown"
+        rec.target_country_evidence = ""
     _gen_fit, n_gen, _, _ = assess_generations(text_low)
     rec.generation_groups = "; ".join(detected_generation_groups(text_low))
     rec.number_of_generations = n_gen

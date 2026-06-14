@@ -114,40 +114,57 @@ def _download_to_country_dir(pdf_url: str, candidate_id: str, country: str):
                           legality_note="open access")
 
 
-def download_approved(db) -> dict:
-    """candidate_status == approved_for_download の候補だけ PDF を取得する。
+# 合法とみなす legality_note (section 4)
+LEGAL_NOTES_OK = ("open access", "official/repository", "legal", "open_access", "official", "repository")
 
-    PDF 取得に成功しても N には数えない。成功後は通常の ingest→dedupe→screen を通す。
-    返り値は集計 dict。
+
+def download_approved(db) -> dict:
+    """approved_for_download かつ合法な候補だけ PDF を取得する。
+
+    取得対象条件: candidate_status==approved_for_download AND pdf_url あり AND
+    duplicate_status==new_candidate AND legality_note が合法集合。
+    各候補に download_status/error/attempted_url/downloaded_path/download_timestamp を記録。
+    PDF 取得に成功しても N には数えない。
     """
     from .models import CandidateStatus
 
-    stats = {"approved": 0, "downloaded": 0, "skipped": 0, "failed": 0}
+    stats = {"approved": 0, "attempted": 0, "downloaded": 0, "skipped": 0, "failed": 0}
     approved = db.candidates_by_status(CandidateStatus.approved_for_download.value)
     stats["approved"] = len(approved)
 
     for cand in approved:
-        cand.timestamp = now_iso()
+        cand.download_timestamp = now_iso()
         cand.attempted_url = cand.pdf_url or ""
 
+        # スキップ条件 (download_status を必ず埋める)
         if not cand.pdf_url:
             cand.download_status = "skipped"
             cand.download_error = "pdf_url が空"
             stats["skipped"] += 1
             db.upsert_candidate(cand)
             continue
-        if not legality_ok(cand.legality_note):
+        if cand.duplicate_status.value != "new_candidate":
             cand.download_status = "skipped"
-            cand.download_error = f"legality_note が違法/不明確: '{cand.legality_note}'"
+            cand.download_error = f"duplicate_status={cand.duplicate_status.value}"
+            stats["skipped"] += 1
+            db.upsert_candidate(cand)
+            continue
+        if cand.legality_note not in LEGAL_NOTES_OK:
+            cand.download_status = "skipped"
+            cand.download_error = f"legality_note が合法集合にない: '{cand.legality_note}'"
             stats["skipped"] += 1
             db.upsert_candidate(cand)
             logger.info("%s: 合法性が不明確のためスキップ", cand.candidate_id)
             continue
 
+        # ここから取得を試みる
+        cand.download_status = "attempted"
+        stats["attempted"] += 1
         res = _download_to_country_dir(cand.pdf_url, cand.candidate_id, cand.country)
         if res.ok:
             cand.download_status = "success"
             cand.download_error = ""
+            cand.downloaded_path = res.path or ""
             cand.candidate_status = CandidateStatus.downloaded
             cand.notes = (cand.notes + " | " if cand.notes else "") + f"downloaded -> {res.path}"
             stats["downloaded"] += 1

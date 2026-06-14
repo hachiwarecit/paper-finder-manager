@@ -173,6 +173,83 @@ class QualityAssuranceAgent:
                         if (r.sample_size and r.authors) else "",
                     20, "同一データ署名(authors/sample/country/gens)が複数acceptedでないか", True)
 
+        # ---- 国の出所 (query_country と target_country の分離) に関する検査 ----
+        accepted = [r for r in db.all() if r.screening_status == ScreeningStatus.accepted]
+        bad_src = [r for r in accepted
+                   if r.target_country_source in ("query_only", "unknown")]
+        for r in bad_src:
+            demote(r, f"accepted だが target_country_source={r.target_country_source} (検索由来/不明)")
+        report.checks.append(QACheck(21, "target_country_source=query_only/unknown の accepted がないか",
+                                     not bad_src, [r.paper_id for r in bad_src],
+                                     "needs_review に降格" if bad_src else ""))
+
+        accepted = [r for r in db.all() if r.screening_status == ScreeningStatus.accepted]
+        no_evidence = [r for r in accepted if not (r.target_country_evidence or "").strip()]
+        for r in no_evidence:
+            demote(r, "accepted だが target_country_evidence が空")
+        report.checks.append(QACheck(22, "target_country_evidence が空の accepted がないか",
+                                     not no_evidence, [r.paper_id for r in no_evidence],
+                                     "needs_review に降格" if no_evidence else ""))
+
+        # query_country と target_country を混同していないか:
+        # target_country が TH/VN なのに証拠 source が query_only のものは上で降格済み。
+        accepted = [r for r in db.all() if r.screening_status == ScreeningStatus.accepted]
+        confused = [r for r in accepted
+                    if r.target_country in ("Thailand", "Vietnam")
+                    and r.target_country_source not in ("title", "abstract", "full_text", "metadata")]
+        report.checks.append(QACheck(23, "query_country と target_country を混同していないか",
+                                     not confused, [r.paper_id for r in confused]))
+
+        # N の論文すべてに evidence と (doi or source_url) があるか
+        n_papers = [r for r in db.all() if is_analysis_n(r)]
+        n_no_ev = [r.paper_id for r in n_papers if not (r.target_country_evidence or "").strip()]
+        report.checks.append(QACheck(24, "Nに入った論文すべてに target_country_evidence があるか",
+                                     not n_no_ev, n_no_ev))
+        n_no_src = [r.paper_id for r in n_papers
+                    if not ((r.doi or "").strip() or (r.source_url or "").strip())]
+        report.checks.append(QACheck(25, "Nに入った論文すべてに source_url または doi があるか",
+                                     not n_no_src, n_no_src))
+
+        # ---- 候補 (approved_for_download) の検査 ----
+        approved_c = db.candidates_by_status("approved_for_download")
+
+        def demote_candidate(c, reason: str) -> None:
+            from ..models import CandidateStatus
+            c.candidate_status = CandidateStatus.needs_review
+            c.auto_approve_blockers = (c.auto_approve_blockers + "; " if c.auto_approve_blockers else "") + f"[QA] {reason}"
+            db.upsert_candidate(c)
+            report.demoted.append((c.candidate_id, reason))
+
+        bad_c = [c for c in approved_c if c.target_country_source in ("query_only", "unknown")]
+        for c in bad_c:
+            demote_candidate(c, f"approved だが target_country_source={c.target_country_source}")
+        report.checks.append(QACheck(26, "query_only/unknown の approved_for_download がないか",
+                                     not bad_c, [c.candidate_id for c in bad_c],
+                                     "approved を needs_review に降格" if bad_c else ""))
+
+        approved_c = db.candidates_by_status("approved_for_download")
+        bad_ev = [c for c in approved_c if not (c.target_country_evidence or "").strip()]
+        for c in bad_ev:
+            demote_candidate(c, "approved だが target_country_evidence が空")
+        report.checks.append(QACheck(27, "target_country_evidence が空の approved がないか",
+                                     not bad_ev, [c.candidate_id for c in bad_ev],
+                                     "approved を needs_review に降格" if bad_ev else ""))
+
+        # non-dry-run で approved かつ legal PDF ありなのに download_status が未実行
+        if require_artifacts:
+            from ..downloader import LEGAL_NOTES_OK as _DL_OK
+            approved_c = db.candidates_by_status("approved_for_download")
+            stuck = [c for c in approved_c
+                     if c.pdf_url and c.legality_note in _DL_OK
+                     and c.download_status in ("", "not_attempted")]
+            for c in stuck:
+                demote_candidate(c, "approved+legal PDF だが download_status 未実行")
+            report.checks.append(QACheck(28, "approved+legal PDFなのにdownload_statusが空の候補がないか",
+                                         not stuck, [c.candidate_id for c in stuck],
+                                         "needs_review に降格" if stuck else ""))
+        else:
+            report.checks.append(QACheck(28, "approved+legal PDFのdownload_status (dry-runでは検査せず)", True))
+
         report.n_after = sum(1 for r in db.all() if is_analysis_n(r))
         logger.info("QA: N %d -> %d (降格 %d 件)", report.n_before, report.n_after,
                     len(report.demoted))

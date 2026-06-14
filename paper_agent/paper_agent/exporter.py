@@ -68,10 +68,12 @@ def _record_to_export_row(rec: PaperRecord) -> dict:
 CANDIDATE_COLUMNS = [
     "candidate_id", "candidate_status", "candidate_score", "duplicate_status",
     "duplicate_of", "same_dataset_warning", "title", "authors", "year", "doi",
-    "country", "category", "target_country", "generation_keywords",
-    "workplace_keywords", "category_keywords", "document_type_guess",
-    "open_access_flag", "pdf_url", "source_name", "source_url", "legality_note",
-    "download_status", "download_error", "notes",
+    "query_country", "category", "target_country", "target_country_source",
+    "target_country_evidence", "generation_keywords", "workplace_keywords",
+    "category_keywords", "document_type_guess", "open_access_flag", "pdf_url",
+    "source_name", "source_url", "legality_note", "auto_approve_reason",
+    "auto_approve_blockers", "download_status", "download_error", "attempted_url",
+    "downloaded_path", "download_timestamp", "notes",
 ]
 
 
@@ -87,9 +89,11 @@ def _candidate_to_row(c) -> dict:
         "authors": c.authors,
         "year": c.year if c.year is not None else "",
         "doi": c.doi or "",
-        "country": c.country,
+        "query_country": c.query_country,
         "category": c.category,
         "target_country": c.target_country,
+        "target_country_source": c.target_country_source,
+        "target_country_evidence": c.target_country_evidence,
         "generation_keywords": c.generation_keywords,
         "workplace_keywords": c.workplace_keywords,
         "category_keywords": c.category_keywords,
@@ -99,8 +103,13 @@ def _candidate_to_row(c) -> dict:
         "source_name": c.source_name,
         "source_url": c.source_url or "",
         "legality_note": c.legality_note,
+        "auto_approve_reason": c.auto_approve_reason,
+        "auto_approve_blockers": c.auto_approve_blockers,
         "download_status": c.download_status,
         "download_error": c.download_error,
+        "attempted_url": c.attempted_url,
+        "downloaded_path": c.downloaded_path,
+        "download_timestamp": c.download_timestamp,
         "notes": c.notes,
     }
 

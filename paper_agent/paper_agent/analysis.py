@@ -20,12 +20,16 @@ from .models import DocumentType, PaperRecord, ScreeningStatus
 
 _VALID_COUNTRIES = {"thailand", "vietnam"}
 _EXCLUDED_DOC_TYPES = {DocumentType.teaching_case, DocumentType.conference_abstract}
+# 対象国の証拠として N に使える出所 (query_only / unknown は不可)
+_VALID_COUNTRY_SOURCES = {"title", "abstract", "full_text", "metadata"}
 
 
 def is_analysis_n(rec: PaperRecord) -> bool:
     """この論文を analysis_N に数えてよいか (厳密判定)。
 
     AnalysisNAgent の唯一の判定基準。harvest/download/candidate 件数は数えない。
+    対象国は検索国ラベルではなく、文書の証拠 (title/abstract/full_text/metadata) で
+    確認できたものだけを認める。query_only / unknown は N に入れない。
     """
     dt = rec.document_type
     return (
@@ -35,6 +39,8 @@ def is_analysis_n(rec: PaperRecord) -> bool:
         and rec.full_text_available is True
         and (rec.number_of_generations or 0) >= 2
         and (rec.target_country or "").strip().lower() in _VALID_COUNTRIES
+        and (rec.target_country_source or "") in _VALID_COUNTRY_SOURCES
+        and bool((rec.target_country_evidence or "").strip())
         and rec.workplace_fit is True
         and dt not in _EXCLUDED_DOC_TYPES
     )

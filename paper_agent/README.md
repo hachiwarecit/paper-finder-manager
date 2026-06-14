@@ -527,16 +527,41 @@ N から除外**します（重複/同一データ/単一世代/要旨のみ/tea
 対象国不一致/職場文脈なし/本文なし、cleaned・metadata の有無、DOI/source_url の有無、
 同一 DOI・タイトル・データ署名が複数 accepted になっていないか 等）。結果は `qa_report.md`。
 
+### query_country と target_country の分離（重要）
+
+検索で指定した国（`query_country`）と、論文が実際に扱う調査対象国（`target_country`）を
+厳密に分けています。**検索クエリに Thailand と入っているだけでは `target_country=Thailand`
+にしません。** タイトル・要旨・本文・候補メタデータの**証拠**で確認できた場合のみ採用します。
+
+- `target_country_source`: `title` / `abstract` / `full_text` / `metadata` / `query_only` / `unknown`
+- `target_country_evidence`: 根拠（本文中の語など）
+- **`query_only` / `unknown` は N に入れない・auto-approve しない・国スコアに加点しない。**
+
+Candidates シートの `target_country_source` / `target_country_evidence` /
+`auto_approve_blockers`（承認されなかった理由）/ `download_status` を見れば、
+なぜ承認・除外されたかを1件ずつ追えます。
+
 ### N に数える条件（厳守・AnalysisNAgent が唯一の責任者）
 
 ```text
 screening_status == accepted / duplicate_of is empty / same_dataset_warning == false
 full_text_available == true / number_of_generations >= 2
-target_country is Thailand or Vietnam / workplace_fit == true
+target_country is Thailand or Vietnam
+target_country_source in title/abstract/full_text/metadata   ← query由来は不可
+target_country_evidence is not empty
+workplace_fit == true
 document_type is not teaching_case / not conference_abstract
 ```
 
 **harvest 件数・download 成功件数・candidate 件数は絶対に N に数えません。**
+
+### download_attempted=0 のときの診断
+
+`autopilot_summary.md` には `download_attempted_count` と、0 の場合の理由内訳
+（`target_country_source=query_only` / `pdf_url_missing` / `legality_unknown` /
+`generation_evidence_insufficient` / `workplace_evidence_missing` /
+`candidate_score<...` 等）を出します。`download_status` 別件数・`candidate_status` 別件数・
+`target_country_source` 別件数も出るので、「なぜ download が走らなかったか」を summary だけで判断できます。
 
 ### 出力ファイル（autopilot 終了後）
 

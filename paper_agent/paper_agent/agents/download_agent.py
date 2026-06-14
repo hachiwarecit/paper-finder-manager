@@ -15,6 +15,6 @@ class DownloadAgent:
         res = AgentResult(self.name)
         stats = download_approved(db)
         res.info.update(stats)
-        res.add(f"承認済み {stats['approved']} 件中 成功 {stats['downloaded']} / "
-                f"スキップ {stats['skipped']} / 失敗 {stats['failed']}")
+        res.add(f"承認済み {stats['approved']} 件: 試行 {stats.get('attempted', 0)} / "
+                f"成功 {stats['downloaded']} / スキップ {stats['skipped']} / 失敗 {stats['failed']}")
         return res

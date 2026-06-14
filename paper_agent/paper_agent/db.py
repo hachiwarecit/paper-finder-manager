@@ -21,6 +21,7 @@ COLUMNS = [
     "authors", "year", "doi", "source_name", "source_url", "pdf_url",
     "local_pdf_path", "local_text_path", "original_language",
     "analysis_language", "full_text_available", "target_country",
+    "target_country_source", "target_country_evidence", "query_country",
     "organization_context", "workplace_fit", "generation_groups",
     "number_of_generations", "sample_size", "research_method", "main_topic",
     "peer_reviewed", "document_type", "license_status", "legality_note",
@@ -32,12 +33,14 @@ COLUMNS = [
 # candidates テーブルの列 (Candidate のフィールドに対応)
 CAND_COLUMNS = [
     "candidate_id", "title", "normalized_title", "authors", "year", "doi",
-    "abstract", "source_name", "source_url", "pdf_url", "country", "category",
-    "target_country", "generation_keywords", "workplace_keywords",
+    "abstract", "source_name", "source_url", "pdf_url", "country", "query_country",
+    "category", "target_country", "target_country_source", "target_country_evidence",
+    "generation_keywords", "workplace_keywords",
     "category_keywords", "document_type_guess", "open_access_flag",
     "legality_note", "candidate_score", "candidate_status", "duplicate_status",
-    "duplicate_of", "same_dataset_warning", "notes", "download_status",
-    "download_error", "attempted_url", "timestamp", "created_at", "updated_at",
+    "duplicate_of", "same_dataset_warning", "notes", "auto_approve_reason",
+    "auto_approve_blockers", "download_status", "download_error", "attempted_url",
+    "downloaded_path", "download_timestamp", "timestamp", "created_at", "updated_at",
 ]
 
 _CREATE_SQL = f"""
@@ -90,6 +93,11 @@ class PaperDB:
         for col in COLUMNS:
             if col not in existing:
                 self.conn.execute(f"ALTER TABLE papers ADD COLUMN {col} TEXT")
+        cur = self.conn.execute("PRAGMA table_info(candidates)")
+        existing_c = {row["name"] for row in cur.fetchall()}
+        for col in CAND_COLUMNS:
+            if col not in existing_c:
+                self.conn.execute(f"ALTER TABLE candidates ADD COLUMN {col} TEXT")
         self.conn.commit()
 
     # ------------------------------------------------------------------
@@ -158,6 +166,9 @@ class PaperDB:
             analysis_language=d.get("analysis_language") or "en",
             full_text_available=as_bool("full_text_available"),
             target_country=d.get("target_country") or "unknown",
+            target_country_source=d.get("target_country_source") or "unknown",
+            target_country_evidence=d.get("target_country_evidence") or "",
+            query_country=d.get("query_country") or "unknown",
             organization_context=d.get("organization_context") or "unknown",
             workplace_fit=as_bool("workplace_fit"),
             generation_groups=d.get("generation_groups") or "",
@@ -278,8 +289,11 @@ class PaperDB:
             source_url=d.get("source_url") or None,
             pdf_url=d.get("pdf_url") or None,
             country=d.get("country") or "unknown",
+            query_country=d.get("query_country") or "unknown",
             category=d.get("category") or "unknown",
             target_country=d.get("target_country") or "unknown",
+            target_country_source=d.get("target_country_source") or "unknown",
+            target_country_evidence=d.get("target_country_evidence") or "",
             generation_keywords=d.get("generation_keywords") or "",
             workplace_keywords=d.get("workplace_keywords") or "",
             category_keywords=d.get("category_keywords") or "",
@@ -292,9 +306,13 @@ class PaperDB:
             duplicate_of=d.get("duplicate_of") or None,
             same_dataset_warning=as_bool("same_dataset_warning"),
             notes=d.get("notes") or "",
-            download_status=d.get("download_status") or "",
+            auto_approve_reason=d.get("auto_approve_reason") or "",
+            auto_approve_blockers=d.get("auto_approve_blockers") or "",
+            download_status=d.get("download_status") or "not_attempted",
             download_error=d.get("download_error") or "",
             attempted_url=d.get("attempted_url") or "",
+            downloaded_path=d.get("downloaded_path") or "",
+            download_timestamp=d.get("download_timestamp") or "",
             timestamp=d.get("timestamp") or "",
             created_at=d.get("created_at") or "",
             updated_at=d.get("updated_at") or "",

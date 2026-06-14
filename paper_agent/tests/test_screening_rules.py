@@ -94,8 +94,8 @@ def test_thai_language_requires_translation():
     assert res.decision == ScreeningStatus.needs_review
 
 
-def test_country_label_fallback_when_text_has_no_country_keyword():
-    # 本文に国名が無くても、取り込み時の国ラベル(TH/VN)で country_fit を満たす
+def test_query_country_label_alone_does_not_set_country_fit():
+    # 本文に Thailand/Vietnam の証拠が無ければ、検索国ラベル(TH)だけで country_fit にしない
     text = (
         "Abstract\nThis paper compares Generation X and Generation Y employees in companies.\n\n"
         "Introduction\nA multigenerational workforce in organizations and firms is studied. "
@@ -104,7 +104,24 @@ def test_country_label_fallback_when_text_has_no_country_keyword():
         "Discussion\nGenerations differ in work values across companies and organizations.\n\n"
         "Conclusion\nGenerational diversity matters in the workplace.\n"
     ) * 3
-    res_no_label = screen(_rec(country="unknown"), text)
-    assert res_no_label.country_fit is False
-    res_label = screen(_rec(country="TH"), text)
-    assert res_label.country_fit is True
+    # 検索国ラベル TH があっても、本文に証拠が無いので country_fit=False
+    res_label = screen(_rec(country="TH", query_country="TH"), text)
+    assert res_label.country_fit is False
+    assert res_label.target_country_source in ("unknown", "query_only")
+
+
+def test_country_fit_requires_document_evidence():
+    # 本文に Thailand があれば country_fit=True, source=full_text
+    text = (
+        "Abstract\nThis study compares Generation X and Generation Y employees in Thailand companies.\n\n"
+        "Introduction\nThailand workplaces and organizations employ a multigenerational workforce. "
+        "Baby Boomers, Generation X and Generation Y employees work together in Thai firms. "
+        "Work values and motivation across generations in the workplace are compared.\n\n"
+        "Discussion\nGenerations differ in work values across Thai companies.\n\n"
+        "Conclusion\nGenerational diversity matters in the Thailand workplace.\n"
+    ) * 3
+    res = screen(_rec(country="TH"), text)
+    assert res.country_fit is True
+    assert res.target_country == "Thailand"
+    assert res.target_country_source == "full_text"
+    assert res.target_country_evidence

@@ -26,7 +26,7 @@ from .models import (
     DuplicateType,
     PaperRecord,
 )
-from .screener import _categories, _count_hits, _rules
+from .screener import _categories, _count_hits, _rules, detect_target_country
 from .utils import get_logger, normalize_title, now_iso
 
 logger = get_logger()
@@ -89,16 +89,6 @@ def _category_terms(text_low: str, category: Optional[str]) -> tuple[str, list[s
     return category or "unknown", []
 
 
-def _detect_target_country(text_low: str, country_label: str) -> str:
-    rules = _rules().get("country", {})
-    th = _count_hits(text_low, rules.get("thailand", {}).get("keywords", []))
-    vn = _count_hits(text_low, rules.get("vietnam", {}).get("keywords", []))
-    if th or vn:
-        return "Thailand" if th >= vn else "Vietnam"
-    label = (country_label or "").upper()
-    if label in ("TH", "VN"):
-        return COUNTRY_NAME[label]
-    return "unknown"
 
 
 # ---------------------------------------------------------------------------
@@ -113,7 +103,9 @@ def _candidate_id(work: dict, country: str) -> str:
 def score_candidate(cand: Candidate) -> float:
     """0..1 のスコア。人間確認の優先順位付け用 (自動採用には使わない)。"""
     score = 0.0
-    if cand.target_country in ("Thailand", "Vietnam"):
+    # 国スコアは「証拠ベースで対象国が確認できた」場合のみ加点 (query_only は加点しない)
+    if cand.target_country in ("Thailand", "Vietnam") and \
+            cand.target_country_source in ("title", "abstract", "full_text", "metadata"):
         score += 0.20
     if cand.workplace_keywords:
         score += 0.15
@@ -142,7 +134,13 @@ def make_candidate(work: dict, country: str, category: Optional[str]) -> Candida
     gen_terms = _generation_terms(text_low)
     wp_terms = _workplace_terms(text_low)
     best_cat, cat_terms = _category_terms(text_low, category)
-    target_country = _detect_target_country(text_low, country)
+
+    # 対象国は title / abstract の証拠のみで判定 (検索国ラベルは使わない)
+    tc, tc_source, tc_evidence = detect_target_country(title=title, abstract=abstract)
+    query_country = (country or "unknown").upper() if country else "unknown"
+    if tc == "unknown":
+        # 検索クエリ由来でしか国が分からない場合は query_only (Thailand とは断定しない)
+        tc_source = "query_only"
 
     oa = bool(work.get("open_access_flag"))
     pdf_url = work.get("pdf_url")
@@ -159,9 +157,12 @@ def make_candidate(work: dict, country: str, category: Optional[str]) -> Candida
         source_name=work.get("source_name") or "unknown",
         source_url=work.get("source_url"),
         pdf_url=pdf_url,
-        country=(country or "unknown").upper() if country else "unknown",
+        country=query_country,
+        query_country=query_country,
         category=best_cat or (category or "unknown"),
-        target_country=target_country,
+        target_country=tc,
+        target_country_source=tc_source,
+        target_country_evidence=tc_evidence,
         generation_keywords="; ".join(gen_terms),
         workplace_keywords="; ".join(wp_terms),
         category_keywords="; ".join(cat_terms),
