@@ -16,13 +16,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from .models import PaperRecord, ScreeningStatus
+from .models import DocumentType, PaperRecord, ScreeningStatus
 
 _VALID_COUNTRIES = {"thailand", "vietnam"}
+_EXCLUDED_DOC_TYPES = {DocumentType.teaching_case, DocumentType.conference_abstract}
 
 
 def is_analysis_n(rec: PaperRecord) -> bool:
-    """この論文を analysis_N に数えてよいか (厳密判定)。"""
+    """この論文を analysis_N に数えてよいか (厳密判定)。
+
+    AnalysisNAgent の唯一の判定基準。harvest/download/candidate 件数は数えない。
+    """
+    dt = rec.document_type
     return (
         rec.screening_status == ScreeningStatus.accepted
         and not (rec.duplicate_of or "").strip()
@@ -31,6 +36,7 @@ def is_analysis_n(rec: PaperRecord) -> bool:
         and (rec.number_of_generations or 0) >= 2
         and (rec.target_country or "").strip().lower() in _VALID_COUNTRIES
         and rec.workplace_fit is True
+        and dt not in _EXCLUDED_DOC_TYPES
     )
 
 

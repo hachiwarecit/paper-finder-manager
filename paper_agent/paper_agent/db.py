@@ -54,6 +54,17 @@ CREATE TABLE IF NOT EXISTS candidates (
 );
 """
 
+_CREATE_HISTORY_SQL = """
+CREATE TABLE IF NOT EXISTS search_history (
+    query TEXT PRIMARY KEY,
+    country TEXT,
+    category TEXT,
+    n_results TEXT,
+    last_run_at TEXT,
+    created_at TEXT
+);
+"""
+
 
 class PaperDB:
     """papers.sqlite への薄いラッパ。"""
@@ -68,6 +79,7 @@ class PaperDB:
     def _create(self) -> None:
         self.conn.execute(_CREATE_SQL)
         self.conn.execute(_CREATE_CAND_SQL)
+        self.conn.execute(_CREATE_HISTORY_SQL)
         self.conn.commit()
         self._migrate()
 
@@ -321,6 +333,28 @@ class PaperDB:
     def candidate_count(self) -> int:
         cur = self.conn.execute("SELECT COUNT(*) AS n FROM candidates")
         return int(cur.fetchone()["n"])
+
+    # ------------------------------------------------------------------
+    # search_history (実行済み検索クエリ)
+    # ------------------------------------------------------------------
+    def search_seen(self, query: str) -> bool:
+        cur = self.conn.execute("SELECT 1 FROM search_history WHERE query=?", (query,))
+        return cur.fetchone() is not None
+
+    def record_search(self, query: str, country: str, category: str, n_results: int) -> None:
+        from .utils import now_iso
+        ts = now_iso()
+        self.conn.execute(
+            "INSERT INTO search_history (query, country, category, n_results, last_run_at, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(query) DO UPDATE SET n_results=excluded.n_results, last_run_at=excluded.last_run_at",
+            (query, country, category, str(n_results), ts, ts),
+        )
+        self.conn.commit()
+
+    def all_searches(self) -> list[dict]:
+        cur = self.conn.execute("SELECT * FROM search_history ORDER BY created_at")
+        return [dict(r) for r in cur.fetchall()]
 
     def close(self) -> None:
         self.conn.close()

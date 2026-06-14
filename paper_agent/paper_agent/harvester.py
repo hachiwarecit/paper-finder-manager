@@ -262,6 +262,32 @@ def _fetch_works(query: str, limit: int) -> list[dict]:
 # ---------------------------------------------------------------------------
 # harvest 本体
 # ---------------------------------------------------------------------------
+def harvest_query(query: str, country: str, category: Optional[str], limit: int,
+                  db: PaperDB, fetch=None) -> list[Candidate]:
+    """1つの検索クエリで候補を収集・保存する (autopilot 用)。
+
+    fetch(query, limit) -> 正規化 work 辞書のリスト。None ならネットワーク検索。
+    既存の論文・候補と照合して候補段階の重複判定を行う。
+    """
+    if fetch is not None:
+        works = fetch(query, limit)
+    else:
+        works = _fetch_works(query, limit)
+
+    existing_papers = db.all()
+    saved: list[Candidate] = []
+    for w in (works or [])[:limit]:
+        try:
+            cand = make_candidate(w, country, category)
+            existing_candidates = db.all_candidates() + saved
+            candidate_dedupe(cand, existing_papers, existing_candidates)
+            db.upsert_candidate(cand)
+            saved.append(cand)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("候補処理失敗 (%s): %s", str(w.get("title", ""))[:50], exc)
+    return saved
+
+
 def harvest(country: str, category: Optional[str], limit: int = 100,
             db: PaperDB | None = None, raw_works: Optional[list[dict]] = None) -> list[Candidate]:
     """候補を収集して candidates テーブルへ保存する。保存した候補リストを返す。"""

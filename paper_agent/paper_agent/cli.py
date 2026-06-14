@@ -22,25 +22,18 @@ from pathlib import Path
 
 from .cleaner import clean_to_file
 from .db import PaperDB
-from .duplicate_checker import best_match
 from .exporter import export as export_inventory
-from .extractor import extract_text
-from .models import DuplicateType, PaperRecord, ScreeningStatus
-from .screener import (
-    assess_country,
-    assess_generations,
-    detected_generation_groups,
-    enrich_record,
-    screen,
-)
+from .extractor import extract_text, guess_title
+from .models import PaperRecord, ScreeningStatus
+from .utils import DATA_DIR
+from .pipeline import apply_dedupe, apply_screen, dedupe_all_papers, get_text_for, screen_all_papers
+from .screener import screen
 from .translator_prep import prepare_translation
 from .utils import (
-    DATA_DIR,
     detect_language,
     ensure_dirs,
     get_logger,
     normalize_title,
-    sha256_file,
     sha256_text,
     slugify,
 )
@@ -49,22 +42,6 @@ logger = get_logger()
 
 COUNTRY_NAME = {"TH": "Thailand", "VN": "Vietnam", "JP": "Japan"}
 TEXT_DIR = "03_screening"
-
-
-# ---------------------------------------------------------------------------
-# テキスト取得ヘルパ
-# ---------------------------------------------------------------------------
-def get_text_for(rec: PaperRecord) -> str:
-    """レコードの抽出テキストを返す。text パスが無ければ PDF から抽出する。"""
-    if rec.local_text_path and Path(rec.local_text_path).is_file():
-        try:
-            return Path(rec.local_text_path).read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            pass
-    if rec.local_pdf_path and Path(rec.local_pdf_path).is_file():
-        res = extract_text(rec.local_pdf_path)
-        return res.text
-    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -84,84 +61,24 @@ def cmd_init(args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------------------
 # ingest
 # ---------------------------------------------------------------------------
-def _make_paper_id(stem: str, country: str, db: PaperDB) -> str:
-    base = slugify(stem, max_len=40) or "paper"
-    pid = f"{country}-{base}"
-    if not db.exists(pid):
-        return pid
-    i = 2
-    while db.exists(f"{pid}-{i}"):
-        i += 1
-    return f"{pid}-{i}"
-
-
 def cmd_ingest(args: argparse.Namespace) -> int:
+    from .ingest import ingest_folder
+
     ensure_dirs()
     in_dir = Path(args.input)
     if not in_dir.exists():
         print(f"入力フォルダが存在しません: {in_dir}", file=sys.stderr)
         return 1
-
     country = (args.country or "unknown").upper()
     db = PaperDB()
-    text_out_dir = DATA_DIR / TEXT_DIR
-    text_out_dir.mkdir(parents=True, exist_ok=True)
-
-    files = sorted(
-        p for p in in_dir.rglob("*") if p.suffix.lower() in (".pdf", ".txt", ".text", ".md")
-    )
-    if not files:
-        print(f"取り込み対象の PDF/TXT が見つかりません: {in_dir}")
+    try:
+        recs = ingest_folder(in_dir, country, db)
+    finally:
         db.close()
+    if not recs:
+        print(f"取り込み対象の PDF/TXT が見つかりません: {in_dir}")
         return 0
-
-    ingested = 0
-    for path in files:
-        try:
-            pid = _make_paper_id(path.stem, country, db)
-            res = extract_text(path)
-            text = res.text or ""
-            full_text = bool(text and len(text) >= 200)
-
-            # 抽出テキストを 03_screening に保存
-            text_path = None
-            if text:
-                text_path = text_out_dir / f"{slugify(pid)}.txt"
-                text_path.write_text(text, encoding="utf-8")
-
-            is_pdf = path.suffix.lower() == ".pdf"
-            rec = PaperRecord(
-                paper_id=pid,
-                country=country if country in COUNTRY_NAME else "unknown",
-                title="",  # 後で extract/screen がタイトル推定
-                authors="",
-                source_name="local_ingest",
-                local_pdf_path=str(path) if is_pdf else None,
-                local_text_path=str(text_path) if text_path else (str(path) if not is_pdf else None),
-                original_language=detect_language(text),
-                full_text_available=full_text,
-                pdf_sha256=sha256_file(path) if is_pdf else None,
-                text_sha256=sha256_text(text),
-                screening_status=ScreeningStatus.candidate,
-                notes=f"ingested from {path.name}"
-                + (f"; extract_error={res.error}" if res.error else ""),
-            )
-            # タイトル推定 (本文先頭から)
-            from .extractor import guess_title
-
-            title_guess = guess_title(text)
-            if title_guess:
-                rec.title = title_guess
-                rec.normalized_title = normalize_title(title_guess)
-            db.upsert(rec)
-            ingested += 1
-            if res.error:
-                logger.warning("%s: 抽出に問題 (%s)", pid, res.error)
-        except Exception as exc:  # noqa: BLE001
-            logger.error("取り込み失敗 %s: %s", path.name, exc)
-
-    db.close()
-    print(f"取り込み完了: {ingested} 件 (国={country})")
+    print(f"取り込み完了: {len(recs)} 件 (国={country})")
     return 0
 
 
@@ -191,8 +108,6 @@ def cmd_extract(args: argparse.Namespace) -> int:
         rec.full_text_available = len(text) >= 200
         rec.text_sha256 = sha256_text(text)
         rec.original_language = detect_language(text)
-        from .extractor import guess_title
-
         if not rec.title:
             tg = guess_title(text)
             if tg:
@@ -207,32 +122,6 @@ def cmd_extract(args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------------------
 # dedupe
 # ---------------------------------------------------------------------------
-def _apply_dedupe(rec: PaperRecord, others: list[PaperRecord], db: PaperDB) -> str:
-    # 重複判定の前に、対象国・世代区分・言語などをテキストから補っておく
-    enrich_record(rec, get_text_for(rec))
-    result = best_match(rec, others)
-    if result.duplicate_type == DuplicateType.not_duplicate:
-        db.upsert(rec)  # enrich_record で補ったメタデータを保存
-        return "not_duplicate"
-
-    matched = db.get(result.matched_paper_id) if result.matched_paper_id else None
-    group = (matched.duplicate_group_id if matched and matched.duplicate_group_id
-             else result.matched_paper_id)
-    rec.duplicate_group_id = group
-    rec.duplicate_of = result.matched_paper_id
-    rec.duplicate_confidence = result.confidence
-
-    if result.duplicate_type in (DuplicateType.exact_duplicate, DuplicateType.probable_duplicate):
-        rec.screening_status = ScreeningStatus.duplicate
-        rec.rejection_reason = result.explanation
-    elif result.duplicate_type == DuplicateType.same_dataset_possible:
-        rec.screening_status = ScreeningStatus.needs_review
-        rec.same_dataset_warning = True
-        rec.notes = (rec.notes + " | " if rec.notes else "") + result.explanation
-    db.upsert(rec)
-    return result.duplicate_type.value
-
-
 def cmd_dedupe(args: argparse.Namespace) -> int:
     db = PaperDB()
     rec = db.get(args.paper_id)
@@ -241,7 +130,7 @@ def cmd_dedupe(args: argparse.Namespace) -> int:
         db.close()
         return 1
     others = [r for r in db.all() if r.paper_id != rec.paper_id]
-    outcome = _apply_dedupe(rec, others, db)
+    outcome = apply_dedupe(rec, others, db)
     print(f"{rec.paper_id}: {outcome}" + (f" -> {rec.duplicate_of}" if rec.duplicate_of else ""))
     db.close()
     return 0
@@ -249,20 +138,11 @@ def cmd_dedupe(args: argparse.Namespace) -> int:
 
 def cmd_dedupe_all(args: argparse.Namespace) -> int:
     db = PaperDB()
-    records = db.all()
-    if not records:
+    if not db.all():
         print("レコードがありません。先に ingest してください。")
         db.close()
         return 0
-    processed: list[PaperRecord] = []
-    counts = {"exact_duplicate": 0, "probable_duplicate": 0, "same_dataset_possible": 0, "not_duplicate": 0}
-    for rec in records:
-        try:
-            outcome = _apply_dedupe(rec, processed, db)
-            counts[outcome] = counts.get(outcome, 0) + 1
-        except Exception as exc:  # noqa: BLE001
-            logger.error("dedupe 失敗 %s: %s", rec.paper_id, exc)
-        processed.append(db.get(rec.paper_id) or rec)
+    counts = dedupe_all_papers(db)
     db.close()
     print("重複チェック完了:")
     for k, v in counts.items():
@@ -273,45 +153,6 @@ def cmd_dedupe_all(args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------------------
 # screen
 # ---------------------------------------------------------------------------
-def _apply_screen(rec: PaperRecord, db: PaperDB) -> str:
-    text = get_text_for(rec)
-    result = screen(rec, text)
-
-    # メタデータをレコードに反映
-    text_low = text.lower()
-    _, detected_country, _ = assess_country(rec, text_low)
-    if detected_country in ("thailand", "vietnam"):
-        rec.target_country = detected_country.capitalize()
-    gen_fit, n_gen, _, _ = assess_generations(text_low)
-    # 検出された世代グループ名を記録
-    rec.generation_groups = "; ".join(detected_generation_groups(text_low))
-    rec.number_of_generations = n_gen
-    rec.document_type = result.document_type
-    rec.original_language = detect_language(text)
-    rec.full_text_available = result.fulltext_fit
-    rec.workplace_fit = result.workplace_fit
-    if result.category_fit != "unknown":
-        rec.category = result.category_fit
-    if result.translation_required:
-        rec.analysis_language = "en"  # 最終分析は英語
-
-    # dedupe で確定済みの duplicate / same_dataset(needs_review+warning) は維持
-    dedupe_locked = rec.screening_status == ScreeningStatus.duplicate or rec.same_dataset_warning
-    if not dedupe_locked:
-        rec.screening_status = result.decision
-        rec.rejection_reason = "" if result.decision == ScreeningStatus.accepted else result.primary_reason
-    else:
-        # 重複側にも screening の根拠を notes として残す
-        note = f"[screen] decision={result.decision.value}; cat={result.category_fit}"
-        rec.notes = (rec.notes + " | " if rec.notes else "") + note
-
-    if result.warnings:
-        rec.notes = (rec.notes + " | " if rec.notes else "") + " ; ".join(result.warnings)
-
-    db.upsert(rec)
-    return rec.screening_status.value
-
-
 def cmd_screen(args: argparse.Namespace) -> int:
     db = PaperDB()
     rec = db.get(args.paper_id)
@@ -321,7 +162,7 @@ def cmd_screen(args: argparse.Namespace) -> int:
         return 1
     text = get_text_for(rec)
     result = screen(rec, text)
-    _apply_screen(rec, db)
+    apply_screen(rec, db)
     print(f"{rec.paper_id}: {result.decision.value} (confidence={result.confidence})")
     print(f"  country={result.country_fit} workplace={result.workplace_fit} "
           f"generation={result.generation_fit} fulltext={result.fulltext_fit} "
@@ -336,18 +177,11 @@ def cmd_screen(args: argparse.Namespace) -> int:
 
 def cmd_screen_all(args: argparse.Namespace) -> int:
     db = PaperDB()
-    records = db.all()
-    if not records:
+    if not db.all():
         print("レコードがありません。先に ingest してください。")
         db.close()
         return 0
-    counts: dict[str, int] = {}
-    for rec in records:
-        try:
-            outcome = _apply_screen(rec, db)
-            counts[outcome] = counts.get(outcome, 0) + 1
-        except Exception as exc:  # noqa: BLE001
-            logger.error("screen 失敗 %s: %s", rec.paper_id, exc)
+    counts = screen_all_papers(db)
     db.close()
     print("採否判定完了:")
     for k, v in sorted(counts.items()):
@@ -532,6 +366,60 @@ def cmd_analysis_n(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
+# autopilot (エージェント型ワークフロー)
+# ---------------------------------------------------------------------------
+def cmd_autopilot(args: argparse.Namespace) -> int:
+    from .agents import AutopilotConfig, SupervisorAgent
+
+    ensure_dirs()
+    countries = [c.strip().upper() for c in (args.countries or "TH,VN").split(",") if c.strip()]
+    categories = [int(c.strip()) for c in str(args.categories or "1,2,3,4,5,6").split(",") if c.strip()]
+    config = AutopilotConfig(
+        target_n=args.target_n,
+        countries=countries,
+        categories=categories,
+        per_query_limit=args.per_query_limit,
+        dry_run=args.dry_run,
+        qa_strict=args.qa_strict,
+        max_rounds=args.max_rounds,
+    )
+    mode = "DRY-RUN (PDFは取得しない)" if args.dry_run else "通常実行 (PDF取得あり)"
+    print(f"autopilot 開始: {mode}")
+    print(f"  target_N={config.target_n} countries={countries} categories={categories} "
+          f"per_query_limit={config.per_query_limit}")
+
+    db = PaperDB()
+    try:
+        supervisor = SupervisorAgent(config)
+        result = supervisor.run(db)
+    finally:
+        db.close()
+
+    print("\n=== autopilot 終了 ===")
+    print(f"停止理由: {result.stop_reason}")
+    print(f"最終 accepted N: {result.final_n}")
+    if config.target_n > result.final_n:
+        print(f"※ 目標 {config.target_n} に未達 ({config.target_n - result.final_n} 本不足)。"
+              "水増しせず、条件に合う論文だけを N にしています。")
+
+    # QA 不整合の表示 (qa-strict)
+    total_demoted = sum(len(qa.demoted) for qa in result.qa_reports)
+    if total_demoted:
+        print(f"QA: 不適合な accepted を {total_demoted} 件 needs_review に降格し N から除外しました。")
+        if args.qa_strict:
+            last_failures = result.qa_reports[-1].failures if result.qa_reports else []
+            for c in last_failures:
+                print(f"  ! QA[{c.num}] {c.name}: {c.offending[:5]}")
+    print(f"\n出力:")
+    print(f"  {result.summary_path}")
+    print(f"  {result.qa_report_path}")
+    print(f"  {DATA_DIR/'10_exports'/'paper_inventory.xlsx'}")
+    print(f"  {DATA_DIR/'10_exports'/'report.md'}")
+    print(f"  {DATA_DIR/'10_exports'/'accepted_for_analysis.csv'} ほか CSV")
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # parser
 # ---------------------------------------------------------------------------
 def build_parser() -> argparse.ArgumentParser:
@@ -590,6 +478,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("analysis-n", help="最終的に N に数える論文を集計")
     sp.set_defaults(func=cmd_analysis_n)
+
+    sp = sub.add_parser("autopilot", help="エージェント型ワークフローで候補収集〜N確保を自律実行")
+    sp.add_argument("--target-n", type=int, default=100, help="目標 accepted N (既定100)")
+    sp.add_argument("--countries", default="TH,VN", help="対象国 (カンマ区切り)")
+    sp.add_argument("--categories", default="1,2,3,4,5,6", help="カテゴリ (カンマ区切り)")
+    sp.add_argument("--per-query-limit", type=int, default=50, help="1クエリあたりの取得上限")
+    sp.add_argument("--dry-run", action="store_true", help="PDFを取得せず候補収集まで")
+    sp.add_argument("--max-rounds", type=int, default=None, help="最大ラウンド数")
+    sp.add_argument("--qa-strict", action="store_true", help="QA不整合をエラーとして表示 (該当はNから除外)")
+    sp.set_defaults(func=cmd_autopilot)
 
     sp = sub.add_parser("harvest", help="候補をOpenAlex/Crossrefから収集 (PDFは取得しない)")
     sp.add_argument("--country", default="TH", help="国コード TH/VN")

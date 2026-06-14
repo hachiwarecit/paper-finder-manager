@@ -469,6 +469,110 @@ screened              （将来用）
 
 ---
 
+## 3.9 autopilot (エージェント型自律ワークフロー)
+
+毎回 Excel を1件ずつ確認しなくても、候補収集→重複判定→採否→PDF取得→前処理→
+N カウント→品質検査までを自律的に回し、**重複なし・ルール適合・主分析に使える
+accepted 論文** をできるだけ多く（目標 100 本）確保します。
+**100 本に届かない場合は水増しせず、何本確保できたか・なぜ未達かを正直に報告します。**
+
+### 役割エージェント (コード設計上の分担)
+
+`paper_agent/agents/` に12の役割を分離しています（Claude の別インスタンスを生成する
+わけではなく、責務を明確にした設計）。SearchPlanner / Harvester / CandidateScreening /
+DuplicateCheck / LegalAccess / Download / FullTextScreening / MetadataExtraction /
+Cleaner / AnalysisN / **QualityAssurance** / Supervisor。
+
+### コマンド
+
+```powershell
+# まずは必ず dry-run で品質を確認（PDFは取得しない。候補収集・候補重複・スコアリングまで）
+python -m paper_agent autopilot --target-n 100 --countries TH,VN --categories 1,2,3,4,5,6 --per-query-limit 50 --dry-run --qa-strict
+
+# dry-run の結果が良ければ通常実行（合法なOA PDFのみ自動取得 → ingest → screen → N）
+python -m paper_agent autopilot --target-n 100 --countries TH,VN --categories 1,2,3,4,5,6 --per-query-limit 50
+
+# オプション
+python -m paper_agent autopilot --target-n 100 --max-rounds 10
+python -m paper_agent analysis-n          # N だけ確認
+```
+
+- `--dry-run`: PDF を取得せず、候補収集・候補重複判定・候補スコアリング・search_history 保存まで。
+- `--qa-strict`: 品質検査で不整合があれば表示し、該当を N から除外（処理は止めない）。
+
+### ラウンドの流れ（Supervisor が統括）
+
+```
+SearchPlanner → Harvester → CandidateScreening → DuplicateCheck(候補) →
+LegalAccess → 高信頼候補だけ自動承認 → Download → ingest →
+DuplicateCheck(論文) → FullTextScreening → MetadataExtraction →
+Cleaner(accepted) → AnalysisN → QualityAssurance → Supervisor が継続/停止を判断
+```
+
+エラーが出てもログに残して次へ進みます。**停止条件**: target_N 到達 / 検索空間を
+尽くした / 連続3ラウンド新規 accepted が0 / max_rounds 到達。停止時は必ず理由を出します。
+
+### 自動承認の条件（section 5 準拠）
+
+`candidate_score >= 0.6` かつ `duplicate_status == new_candidate` かつ対象国 TH/VN かつ
+多世代シグナルあり かつ workplace_keywords あり かつ pdf_url あり かつ
+legality が open access / official-repository かつ teaching_case/conference_abstract でない、
+を**すべて**満たす候補だけ。`same_dataset_possible` / `probable_duplicate` /
+`needs_review` は自動承認しません。
+
+### QualityAssuranceAgent（最重要）
+
+各ラウンド後に20項目を検査し、**N に不適合な accepted を自動で needs_review に降格して
+N から除外**します（重複/同一データ/単一世代/要旨のみ/teaching_case/conference_abstract/
+対象国不一致/職場文脈なし/本文なし、cleaned・metadata の有無、DOI/source_url の有無、
+同一 DOI・タイトル・データ署名が複数 accepted になっていないか 等）。結果は `qa_report.md`。
+
+### N に数える条件（厳守・AnalysisNAgent が唯一の責任者）
+
+```text
+screening_status == accepted / duplicate_of is empty / same_dataset_warning == false
+full_text_available == true / number_of_generations >= 2
+target_country is Thailand or Vietnam / workplace_fit == true
+document_type is not teaching_case / not conference_abstract
+```
+
+**harvest 件数・download 成功件数・candidate 件数は絶対に N に数えません。**
+
+### 出力ファイル（autopilot 終了後）
+
+| ファイル | 内容 |
+|----------|------|
+| `data/10_exports/autopilot_summary.md` | 最終 N・国×カテゴリ別 N・harvest/download 数・停止理由・N一覧・未達理由 |
+| `data/10_exports/qa_report.md` | QA 20項目の検査結果と降格一覧 |
+| `data/10_exports/paper_inventory.xlsx` | 全シート（`Analysis_N` / `Candidates` ほか） |
+| `data/10_exports/report.md` | 区分別レポート＋Analysis N Summary |
+| `data/10_exports/accepted_for_analysis.csv` | N に入った論文だけ |
+| `data/10_exports/rejected_reasons.csv` | rejected/supplementary/needs_review の理由 |
+| `data/10_exports/duplicate_groups.csv` | duplicate_of の対応 |
+| `data/10_exports/search_history.csv` | 実行済み検索クエリ |
+
+> **N の確認**: まず `autopilot_summary.md` の「最終 accepted N」、詳細は `Analysis_N` シートと
+> `accepted_for_analysis.csv`。なぜ未達かは `autopilot_summary.md` の「N に入らなかった主な理由」と
+> `qa_report.md`。
+
+### 自己検証（推奨手順）
+
+```powershell
+# 1) 小さく
+python -m paper_agent autopilot --target-n 10 --countries TH,VN --categories 1,2 --per-query-limit 10 --dry-run --qa-strict
+python -m paper_agent analysis-n
+# 2) 全カテゴリ dry-run
+python -m paper_agent autopilot --target-n 10 --countries TH,VN --categories 1,2,3,4,5,6 --per-query-limit 20 --dry-run --qa-strict
+python -m paper_agent export --format xlsx
+# 3) 本番規模 dry-run（品質確認後に PDF 取得ありへ）
+python -m paper_agent autopilot --target-n 100 --countries TH,VN --categories 1,2,3,4,5,6 --per-query-limit 50 --dry-run --qa-strict
+```
+
+> `autopilot` はネットワーク（OpenAlex/Crossref）が必要です。`.env` に `CONTACT_EMAIL` を
+> 設定すると API の polite pool を使えます。ネットワークが無いと候補0件で安全に終了します。
+
+---
+
 ## 4. フォルダ構成
 
 ```
