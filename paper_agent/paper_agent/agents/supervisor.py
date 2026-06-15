@@ -50,6 +50,7 @@ class AutopilotResult:
     stop_reason: str = ""
     final_n: int = 0
     qa_reports: list[QAReport] = field(default_factory=list)
+    settlement: dict = field(default_factory=dict)
     summary_path: Path | None = None
     qa_report_path: Path | None = None
 
@@ -149,6 +150,29 @@ class SupervisorAgent:
         return n
 
     # ------------------------------------------------------------------
+    # ダウンロード後の論文処理 (ingest→dedupe→screen→metadata→clean)
+    # ------------------------------------------------------------------
+    def _process_after_download(self, db: PaperDB) -> int:
+        ingested = self._ingest_downloaded(db)
+        if db.count():
+            self.dup.paper_stage(db)
+            self.fulltext.run(db)
+            self.metadata.run(db)
+            self.cleaner.run(db)
+        return ingested
+
+    def _settle_pending(self, db: PaperDB) -> dict:
+        """ループで処理されなかった approved_for_download を必ずダウンロード・処理する。
+
+        前回 dry-run で承認しただけの候補や、検索空間を尽くして本ラウンドが回らなかった
+        場合でも、承認済み候補を確実に DownloadAgent に通す。
+        """
+        pending = db.candidates_by_status(CandidateStatus.approved_for_download.value)
+        dl_stats = self.downloader.run(db).info if pending else {}
+        ingested = self._process_after_download(db)
+        return {"pending_approved": len(pending), "ingested": ingested, "download": dl_stats}
+
+    # ------------------------------------------------------------------
     # メインループ
     # ------------------------------------------------------------------
     def run(self, db: PaperDB, fetch=None) -> AutopilotResult:
@@ -182,12 +206,12 @@ class SupervisorAgent:
                 rlog["auto_approved"] = len(approved)
 
                 if not cfg.dry_run:
-                    self.downloader.run(db)
-                    rlog["ingested"] = self._ingest_downloaded(db)
-                    self.dup.paper_stage(db)
-                    self.fulltext.run(db)
-                    self.metadata.run(db)
-                    self.cleaner.run(db)
+                    dl = self.downloader.run(db).info
+                    rlog["download_attempted"] = dl.get("attempted", 0)
+                    rlog["download_success"] = dl.get("downloaded", 0)
+                    rlog["download_failed"] = dl.get("failed", 0)
+                    rlog["download_skipped"] = dl.get("skipped", 0)
+                    rlog["ingested"] = self._process_after_download(db)
             except Exception as exc:  # noqa: BLE001
                 logger.error("ラウンド %d でエラー: %s", round_i, exc)
                 rlog["error"] = str(exc)
@@ -214,6 +238,15 @@ class SupervisorAgent:
                     break
         else:
             result.stop_reason = f"max_rounds 到達 ({max_rounds})"
+
+        # --- settlement: 非dry-runでは承認済み候補を必ず処理する ---
+        if not cfg.dry_run:
+            result.settlement = self._settle_pending(db)
+
+        # --- 最終 QA を必ず1回記録 (rounds=0 でも qa_reports を空にしない) ---
+        final_qa = self.qa.run(db, require_artifacts=not cfg.dry_run)
+        final_qa.label = "final/settlement"
+        result.qa_reports.append(final_qa)
 
         result.final_n = sum(1 for r in db.all() if is_analysis_n(r))
         self._write_outputs(db, result)
@@ -315,6 +348,29 @@ class SupervisorAgent:
                 key = c.download_error.split(":")[0]
                 skip_reasons[key] = skip_reasons.get(key, 0) + 1
 
+        # ダウンロード診断 (なぜ download されなかったか)
+        from ..downloader import LEGAL_NOTES_OK as _DLOK
+        approved_ever = sum(1 for c in cands if c.auto_approve_reason)
+        approved_now_list = [c for c in cands if c.candidate_status.value == "approved_for_download"]
+        approved_now = len(approved_now_list)
+        downloadable_now = [c for c in approved_now_list
+                            if c.pdf_url and c.legality_note in _DLOK
+                            and c.duplicate_status.value == "new_candidate"
+                            and c.download_status in ("", "not_attempted")]
+        dl_no_reason = {
+            "approved_for_download が0だから試行対象なし": 1 if approved_now == 0 else 0,
+            "approved はあるが pdf_url がない": sum(1 for c in approved_now_list if not c.pdf_url),
+            "approved はあるが legality_note が不許可":
+                sum(1 for c in approved_now_list if c.pdf_url and c.legality_note not in _DLOK),
+            "approved はあるが duplicate_status が new_candidate ではない":
+                sum(1 for c in approved_now_list if c.duplicate_status.value != "new_candidate"),
+            "DownloadAgent未実行/バグ (ダウンロード可能なのに未試行=FAIL)": len(downloadable_now),
+        }
+        download_fail = bool(downloadable_now) and dl_attempted == 0
+        # approved のまま not_attempted で残っているもの (規約違反)
+        stuck_not_attempted = [c.candidate_id for c in approved_now_list
+                               if c.download_status in ("", "not_attempted")]
+
         lines: list[str] = []
         lines.append("# autopilot summary")
         lines.append("")
@@ -374,14 +430,32 @@ class SupervisorAgent:
         for k, v in sorted(tcsource_counts.items()):
             lines.append(f"- {k}: {v}")
         lines.append("")
+
+        # ---- ダウンロード診断 (常に出す) ----
+        lines.append("## ダウンロード診断")
+        lines.append("")
+        verdict = "FAIL" if download_fail else "OK"
+        lines.append(f"- 判定: **{verdict}**")
+        if not self.config.dry_run and download_fail:
+            lines.append("- ⚠ **FAIL: ダウンロード可能な approved_for_download があるのに "
+                         "download が一度も試行されていません (DownloadAgentのバグ)。**")
+        lines.append(f"- approved (累計, auto_approve済み): {approved_ever}")
+        lines.append(f"- approved_for_download (現在): {approved_now}")
+        lines.append(f"- ダウンロード可能で未試行: {len(downloadable_now)}")
+        lines.append(f"- download_attempted_count: {dl_attempted}")
+        lines.append(f"- approved のまま not_attempted で残存 (規約違反): {len(stuck_not_attempted)}")
+        lines.append("")
         if dl_attempted == 0:
-            lines.append("### download_attempted=0 の理由 (auto_approve がブロックされた内訳)")
+            lines.append("### download_attempted=0 の理由")
             lines.append("")
+            for k, v in dl_no_reason.items():
+                if v:
+                    lines.append(f"- {k}: {v} 件")
             if blocker_counts:
+                lines.append("")
+                lines.append("auto_approve がブロックされた内訳 (候補が承認に至らなかった理由):")
                 for k, v in sorted(blocker_counts.items(), key=lambda kv: -kv[1]):
                     lines.append(f"- {k}: {v} 件")
-            else:
-                lines.append("- (候補なし / 承認ブロッカーなし)")
             lines.append("")
         if skip_reasons:
             lines.append("### download_skipped_reasons")
@@ -389,6 +463,27 @@ class SupervisorAgent:
             for k, v in sorted(skip_reasons.items(), key=lambda kv: -kv[1]):
                 lines.append(f"- {k}: {v} 件")
             lines.append("")
+
+        # ---- papers / N が 0 の理由 ----
+        if s.analysis_n == 0 or len(papers) == 0:
+            lines.append("## papers / N が 0 の理由")
+            lines.append("")
+            if self.config.dry_run:
+                lines.append("- dry-run のため PDF を取得せず、論文 (papers) を作らないため N=0 です。")
+            elif len(papers) == 0:
+                if approved_now == 0 and approved_ever == 0:
+                    lines.append("- 自動承認された候補が無く、ダウンロード対象がありませんでした。")
+                    lines.append("  (auto_approve_blockers の内訳を参照)")
+                elif dl_success == 0:
+                    lines.append("- 承認候補はあったが PDF 取得に成功せず、論文が作られませんでした。")
+                    lines.append("  (download_status / download_error を参照)")
+                else:
+                    lines.append("- PDF は取得したが、本文抽出・スクリーニングで accepted に至りませんでした。")
+            else:
+                lines.append("- 論文はあるが N 条件 (accepted・重複なし・証拠ベース対象国・2世代以上・"
+                             "職場文脈・本文あり) を満たすものがありませんでした。")
+            lines.append("")
+
         lines.append("## 実行済み検索クエリ")
         lines.append("")
         for h in db.all_searches():
@@ -428,10 +523,31 @@ class SupervisorAgent:
         lines.append("# QA report (QualityAssuranceAgent)")
         lines.append("")
         lines.append(f"- 生成日時: {now_iso()}")
-        lines.append(f"- ラウンド数: {len(result.qa_reports)}")
+        lines.append(f"- QA実行回数 (ラウンド数): {len(result.qa_reports)}")
+        any_fail = any(not c.passed for qa in result.qa_reports for c in qa.checks)
+        lines.append(f"- 総合判定: **{'要対応あり' if any_fail else 'OK'}**")
+        if result.settlement:
+            st = result.settlement
+            lines.append(f"- settlement: pending_approved={st.get('pending_approved', 0)} / "
+                         f"ingested={st.get('ingested', 0)} / download={st.get('download', {})}")
         lines.append("")
+
+        # 各ラウンドのメトリクス
+        if result.rounds:
+            lines.append("## ラウンド別メトリクス")
+            lines.append("")
+            lines.append("| round | harvested | auto_approved | dl_attempted | dl_success | dl_failed | dl_skipped | N | QA降格 |")
+            lines.append("|-------|-----------|---------------|--------------|-----------|-----------|------------|---|--------|")
+            for r in result.rounds:
+                lines.append(f"| {r.get('round')} | {r.get('harvested',0)} | {r.get('auto_approved',0)} | "
+                             f"{r.get('download_attempted',0)} | {r.get('download_success',0)} | "
+                             f"{r.get('download_failed',0)} | {r.get('download_skipped',0)} | "
+                             f"{r.get('n_after',0)} | {r.get('qa_demoted',0)} |")
+            lines.append("")
+
         for i, qa in enumerate(result.qa_reports, 1):
-            lines.append(f"## Round {i}  (N {qa.n_before} → {qa.n_after}, 降格 {len(qa.demoted)} 件)")
+            tag = f" [{qa.label}]" if qa.label else ""
+            lines.append(f"## QA #{i}{tag}  (N {qa.n_before} → {qa.n_after}, 降格 {len(qa.demoted)} 件)")
             lines.append("")
             lines.append("| # | 検査項目 | 結果 | 該当 | 対応 |")
             lines.append("|---|----------|------|------|------|")

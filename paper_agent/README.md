@@ -555,13 +555,20 @@ document_type is not teaching_case / not conference_abstract
 
 **harvest 件数・download 成功件数・candidate 件数は絶対に N に数えません。**
 
-### download_attempted=0 のときの診断
+### download_attempted=0 のときの診断 / settlement
 
-`autopilot_summary.md` には `download_attempted_count` と、0 の場合の理由内訳
-（`target_country_source=query_only` / `pdf_url_missing` / `legality_unknown` /
-`generation_evidence_insufficient` / `workplace_evidence_missing` /
-`candidate_score<...` 等）を出します。`download_status` 別件数・`candidate_status` 別件数・
-`target_country_source` 別件数も出るので、「なぜ download が走らなかったか」を summary だけで判断できます。
+`autopilot_summary.md` の「ダウンロード診断」に判定（OK/FAIL）と、`download_attempted_count`、
+0 の場合の理由内訳（`approved_for_download が0` / `pdf_url がない` / `legality 不許可` /
+`duplicate_status が new_candidate でない` / `DownloadAgent未実行=FAIL` 等）を出します。
+`download_status` 別件数・`candidate_status` 別件数・`target_country_source` 別件数、
+さらに `papers / N が 0 の理由` も出るので、「なぜ download/N が0なのか」を summary だけで判断できます。
+
+**settlement（再実行安全性）**: 非 dry-run では、検索空間を尽くした場合でも、また前回 dry-run で
+承認だけした候補が残っている場合でも、`approved_for_download` の候補を必ず DownloadAgent に
+通します（settlement パス）。このため `approved_for_download` が `download_status=not_attempted`
+のまま放置されることはありません。`autopilot_summary.md`/`qa_report.md` は、承認済みなのに
+ダウンロードが一度も試行されていなければ **FAIL** として明示します（QA 検査 #29）。
+QA は検索空間を尽くした再実行でも必ず1回以上走り、`qa_report.md` のラウンド数が0になりません。
 
 ### 出力ファイル（autopilot 終了後）
 

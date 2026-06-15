@@ -28,6 +28,7 @@ class QAReport:
     demoted: list[tuple[str, str]] = field(default_factory=list)  # (paper_id, reason)
     n_before: int = 0
     n_after: int = 0
+    label: str = ""
 
     @property
     def ok(self) -> bool:
@@ -238,8 +239,23 @@ class QualityAssuranceAgent:
         # non-dry-run で approved かつ legal PDF ありなのに download_status が未実行
         if require_artifacts:
             from ..downloader import LEGAL_NOTES_OK as _DL_OK
-            approved_c = db.candidates_by_status("approved_for_download")
-            stuck = [c for c in approved_c
+            # 降格前のスナップショットで FAIL を判定する
+            approved_snap = db.candidates_by_status("approved_for_download")
+            cands_all = db.all_candidates()
+            downloadable_now = [c for c in approved_snap
+                                if c.pdf_url and c.legality_note in _DL_OK
+                                and c.duplicate_status.value == "new_candidate"
+                                and c.download_status in ("", "not_attempted")]
+            attempted_total = sum(1 for c in cands_all
+                                  if c.download_status in ("attempted", "success", "failed"))
+            fail = bool(downloadable_now) and attempted_total == 0
+            report.checks.append(QACheck(
+                29, "ダウンロード可能なapprovedがあるのにdownloadが一度も試行されていない (FAIL条件)",
+                not fail, [c.candidate_id for c in downloadable_now],
+                "DownloadAgentが処理していない=バグ" if fail else ""))
+
+            # check 28: 未実行の approved を needs_review に降格 (放置しない)
+            stuck = [c for c in approved_snap
                      if c.pdf_url and c.legality_note in _DL_OK
                      and c.download_status in ("", "not_attempted")]
             for c in stuck:
@@ -249,6 +265,7 @@ class QualityAssuranceAgent:
                                          "needs_review に降格" if stuck else ""))
         else:
             report.checks.append(QACheck(28, "approved+legal PDFのdownload_status (dry-runでは検査せず)", True))
+            report.checks.append(QACheck(29, "download試行 (dry-runでは検査せず)", True))
 
         report.n_after = sum(1 for r in db.all() if is_analysis_n(r))
         logger.info("QA: N %d -> %d (降格 %d 件)", report.n_before, report.n_after,
