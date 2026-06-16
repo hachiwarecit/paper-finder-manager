@@ -21,6 +21,7 @@ reports/duplicates.csv
 reports/rename_log.csv
 reports/khcoder_preprocess_log.csv
 reports/download_safety_log.csv
+reports/duplicate_pdf_names.csv
 
 # OS
 .DS_Store

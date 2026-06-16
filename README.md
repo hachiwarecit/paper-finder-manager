@@ -110,6 +110,7 @@ python scripts/export_tables.py   # 既存 candidates.json からレポートを
 | `reports/candidate_table.csv` | 人間レビュー用の要約表（重複・除外を除く） |
 | `reports/missing_slots.csv` | 採用論文がまだ無い枠（3か国 × 6カテゴリ × 2本） |
 | `reports/duplicates.csv` | 重複と判定された候補 |
+| `reports/duplicate_pdf_names.csv` | 同名PDFの重複チェック結果（`check_duplicate_pdfs.py`） |
 | `pdfs/{country}/...` | OA PDF（取得できた場合のみ） |
 | `organized_pdfs/{country}/...` | 整理済み PDF のコピー（`organize_pdfs.py`、後述） |
 | `reports/rename_log.csv` | PDF 整理の実行ログ（`organize_pdfs.py`） |
@@ -215,13 +216,50 @@ work values, generation, intergenerational, ageism, power distance など）が
 旧来の個別チェック（country_check / category_check / pdf_check）も内部で使う。
 PDF が無いが条件を満たす候補は `manual_download_needed`。
 
-## 重複チェック
+## 重複チェック（メタデータ: candidates）
+
+検索で取得した候補（`candidates.json` / `candidates.csv`）の重複を `scripts/deduplicate.py` が判定する。
 
 1. DOI 一致
 2. タイトルの正規化一致
 3. タイトル類似度が高い場合（`rapidfuzz` による fuzzy 比較）
 
 重複時は `duplicate_of` に原本 `id` を記録し、`screening_status` を `duplicate` にする。
+
+## PDF ファイル名の重複チェック (`scripts/check_duplicate_pdfs.py`)
+
+集めた PDF ファイルの中に **同じファイル名** が複数ないかだけを調べる軽量チェッカー。
+メタデータ（candidates）ではなく、**ディスク上の PDF ファイルそのもの**を見る。
+ハッシュ計算も本文抽出もせず、**ファイル名 (basename) が一致するか**だけで判定する。
+**元の PDF は移動も削除もしない**（レポートを出すだけ）。
+
+辞書分析用に N≈100 を集める途中で、別ソースから落とした同名 PDF やコピーの取り違えを
+早めに見つけるための簡易チェック。
+
+### 判定
+
+- 既定 … ファイル名の **完全一致**（拡張子の大文字小文字だけは無視: `.pdf` == `.PDF`）
+- `--ignore-case` … 名前全体の大文字小文字も無視（`X.pdf` == `x.pdf`）
+
+### 使い方
+
+```bash
+# 既定（pdfs/ と organized_pdfs/ を再帰スキャン）
+python scripts/check_duplicate_pdfs.py
+
+# フォルダを指定（複数指定可）
+python scripts/check_duplicate_pdfs.py --input pdfs
+python scripts/check_duplicate_pdfs.py --input pdfs --input /path/to/folder
+
+# 大文字小文字を無視して比較
+python scripts/check_duplicate_pdfs.py --ignore-case
+```
+
+結果は `reports/duplicate_pdf_names.csv`（列: `group,file_name,count,path`）に出力し、
+重複グループはコンソールにも一覧表示する。重複が無ければ「同じ名前の PDF はありませんでした」と表示する。
+
+> 名前だけの簡易チェックなので、**ファイル名が違う同じ論文**（別ソース版・リネーム済み）は検出しない。
+> その用途が必要になったら、ハッシュや本文・タイトル比較を足して拡張できる。
 
 ## PDF 自動取得の注意
 
