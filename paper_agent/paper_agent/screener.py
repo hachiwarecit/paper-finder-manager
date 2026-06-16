@@ -1,0 +1,439 @@
+"""ルールベースの採否判定 (screener)。
+
+入力 : PaperRecord + 抽出テキスト
+出力 : ScreeningResult
+
+観点:
+  1. Country fit     - 調査対象国が Thailand / Vietnam か (著者所属ではなく文脈)
+  2. Workplace fit   - 職場・組織文脈があるか
+  3. Generation fit  - 2世代以上を実際に比較しているか
+  4. Full text fit   - Abstract だけでなく本文があるか
+  5. Category fit     - 6カテゴリのどれに最も近いか
+  6. Document type   - journal/thesis/conference/teaching_case など
+  7. Language        - タイ語/ベトナム語なら translation_required=True
+
+ANTHROPIC_API_KEY があれば LLM 補助も可能だが、無くてもルールベースで完結する。
+"""
+from __future__ import annotations
+
+import re
+
+from .extractor import guess_title, select_analysis_sections
+from .models import DocumentType, PaperRecord, ScreeningResult, ScreeningStatus
+from .utils import detect_language, get_logger, load_config, normalize_title
+
+logger = get_logger()
+
+_RULES = None
+_CATEGORIES = None
+
+
+def _rules() -> dict:
+    global _RULES
+    if _RULES is None:
+        _RULES = load_config("screening_rules.yaml")
+    return _RULES
+
+
+def _categories() -> dict:
+    global _CATEGORIES
+    if _CATEGORIES is None:
+        _CATEGORIES = load_config("categories.yaml")
+    return _CATEGORIES
+
+
+def _count_hits(text_low: str, keywords) -> int:
+    return sum(1 for kw in (keywords or []) if kw and kw.lower() in text_low)
+
+
+def _first_hit(text_low: str, keywords) -> str | None:
+    for kw in (keywords or []):
+        if kw and kw.lower() in text_low:
+            return kw
+    return None
+
+
+def detect_target_country(title: str = "", abstract: str = "",
+                          full_text: str = "") -> tuple[str, str, str]:
+    """文書の証拠から調査対象国を判定する。
+
+    返り値: (target_country, source, evidence)
+      target_country: "Thailand" / "Vietnam" / "unknown"
+      source: "title" / "abstract" / "full_text" / "unknown"
+      evidence: 根拠となった語と出所 (例: "'thailand' in title")
+
+    重要: 検索クエリに国名が入っているだけでは判定しない (本文側の証拠のみ)。
+    """
+    rules = _rules().get("country", {})
+    th_kws = rules.get("thailand", {}).get("keywords", [])
+    vn_kws = rules.get("vietnam", {}).get("keywords", [])
+    for source, text in (("title", title), ("abstract", abstract), ("full_text", full_text)):
+        if not text:
+            continue
+        low = text.lower()
+        th_hit = _first_hit(low, th_kws)
+        vn_hit = _first_hit(low, vn_kws)
+        if th_hit or vn_hit:
+            th_n = _count_hits(low, th_kws)
+            vn_n = _count_hits(low, vn_kws)
+            if th_n >= vn_n and th_hit:
+                return "Thailand", source, f"'{th_hit}' in {source}"
+            if vn_hit:
+                return "Vietnam", source, f"'{vn_hit}' in {source}"
+    return "unknown", "unknown", ""
+
+
+# 多国間研究の判定に使う国名リストと強いマーカー
+_COUNTRY_NAMES = [
+    "thailand", "vietnam", "china", "japan", "korea", "south korea", "india",
+    "indonesia", "malaysia", "philippines", "singapore", "cambodia", "laos",
+    "myanmar", "taiwan", "hong kong", "united states", "usa", "u.s.", "america",
+    "united kingdom", "u.k.", "britain", "germany", "france", "australia",
+    "canada", "brazil", "mexico", "russia", "italy", "spain", "netherlands",
+    "sweden", "norway", "finland", "denmark", "poland", "turkey", "egypt",
+    "nigeria", "south africa", "new zealand", "switzerland", "austria", "belgium",
+]
+_MULTI_MARKERS = [
+    "cross-national", "cross national", "multinational", "multi-national",
+    "multi-country", "multicountry", "global perspectives", "across countries",
+    "international comparison", "comparative study across", "oecd countries",
+    "asean countries", "european countries", "g20", "worldwide", "globally",
+]
+_N_COUNTRIES_RE = re.compile(r"\b(\d{1,2})\s+countries\b")
+
+
+def detect_multi_country(title: str = "", abstract: str = "",
+                         full_text: str = "") -> tuple[bool, str]:
+    """多国間研究かどうかを判定する。返り値 (is_multi, evidence)。
+
+    TH/VN を含むだけの多国間研究を無条件で国別 N に入れないために使う。
+    """
+    text = f"{title}\n{abstract}\n{full_text}".lower()
+    if not text.strip():
+        return False, ""
+
+    # "N countries" (N>=2)
+    m = _N_COUNTRIES_RE.search(text)
+    if m and int(m.group(1)) >= 2:
+        return True, f"'{m.group(0)}' detected"
+
+    # 強い多国間マーカー
+    for mk in _MULTI_MARKERS:
+        if mk in text:
+            return True, f"'{mk}' detected"
+
+    # 3カ国以上が明示されている
+    found = []
+    for c in _COUNTRY_NAMES:
+        if re.search(r"\b" + re.escape(c) + r"\b", text):
+            found.append(c)
+    distinct = set(found)
+    if len(distinct) >= 3:
+        return True, f"{len(distinct)} countries mentioned: {', '.join(sorted(distinct)[:5])}"
+    return False, ""
+
+
+# ---------------------------------------------------------------------------
+# 各観点の判定
+# ---------------------------------------------------------------------------
+def assess_country(rec: PaperRecord, text: str) -> tuple[bool, str, str, str, list[str]]:
+    """(fit, country, source, evidence, reasons) を返す。
+
+    検索国ラベルは使わない。本文 (full_text) の証拠のみで判定する。
+    本文に証拠が無くても、候補メタデータ由来 (source=metadata) の対象国が既にあれば尊重する。
+    fit=True になるのは country が Thailand/Vietnam かつ source が
+    title/abstract/full_text/metadata のときだけ (query_only / unknown は不可)。
+    """
+    country, source, evidence = detect_target_country(full_text=text)
+    if country == "unknown" and rec.target_country in ("Thailand", "Vietnam") \
+            and rec.target_country_source in ("title", "abstract", "full_text", "metadata"):
+        country, source, evidence = rec.target_country, rec.target_country_source, rec.target_country_evidence
+
+    valid_source = source in ("title", "abstract", "full_text", "metadata")
+    fit = country in ("Thailand", "Vietnam") and valid_source
+    if fit:
+        reasons = [f"{country} が研究対象国として {source} で確認された (根拠: {evidence})。"]
+    elif country in ("Thailand", "Vietnam"):
+        reasons = [f"{country} らしいが証拠が弱く ({source}) N には使えない。"]
+    else:
+        reasons = ["対象国 (Thailand/Vietnam) を本文中に確認できない。"]
+    return fit, country, source, evidence, reasons
+
+
+def assess_workplace(text_low: str) -> tuple[bool, list[str]]:
+    kws = _rules().get("workplace", {}).get("keywords", [])
+    hits = _count_hits(text_low, kws)
+    if hits >= 1:
+        return True, [f"職場・組織文脈の語が {hits} 種類検出された。"]
+    return False, ["職場・組織文脈を示す語が見つからない。"]
+
+
+def assess_generations(text_low: str) -> tuple[bool, int, list[str], list[str]]:
+    rules = _rules()
+    gens = rules.get("generations", {})
+    found_groups: list[str] = []
+    for group_name, kws in gens.items():
+        if _count_hits(text_low, kws) >= 1:
+            found_groups.append(group_name)
+
+    markers = rules.get("multigenerational_markers", [])
+    marker_hit = _count_hits(text_low, markers) >= 1
+
+    # "founder" と "successor" の両方があれば先代-後継の2世代比較とみなす
+    succession_pair = ("succession" in found_groups)
+
+    n = len(found_groups)
+    reasons: list[str] = []
+    warnings: list[str] = []
+
+    generation_fit = False
+    if n >= 2:
+        generation_fit = True
+        reasons.append(f"2世代以上を比較 (検出: {', '.join(found_groups)})。")
+    elif marker_hit:
+        generation_fit = True
+        reasons.append("多世代/世代差を示すマーカー語が検出された。")
+    elif succession_pair:
+        generation_fit = True
+        reasons.append("先代-後継 (founder/successor) の世代間関係が検出された。")
+    elif n == 1:
+        warnings.append(f"単一世代研究の可能性 (検出: {found_groups[0]})。主分析には不十分。")
+        reasons.append("世代が1つしか検出されず、2世代比較が確認できない。")
+    else:
+        reasons.append("世代区分を示す語が検出されない。")
+
+    effective_n = max(n, 2 if (marker_hit and n < 2) else n)
+    return generation_fit, effective_n, reasons, warnings
+
+
+def assess_fulltext(rec: PaperRecord, text: str) -> tuple[bool, list[str], list[str]]:
+    cfg = _rules().get("fulltext", {})
+    min_chars = int(cfg.get("min_chars_for_fulltext", 3000))
+    min_sections = int(cfg.get("min_sections_beyond_abstract", 1))
+    # 明らかに要旨のみと判断する下限 (1ページ Abstract 相当)
+    abstract_only_floor = 800
+
+    reasons: list[str] = []
+    evidence: list[str] = []
+
+    if not text or len(text) < abstract_only_floor:
+        reasons.append(f"本文が短い ({len(text or '')} 文字)。要旨のみの可能性。")
+        return False, reasons, evidence
+
+    # 主判定: Abstract 以外の分析対象章を実体のある分量で抽出できるか
+    st = select_analysis_sections(text)
+    kept = [s.heading for s in st.sections if s.keep and s.body and len(s.body) > 150]
+    beyond_abstract = [h for h in kept if "abstract" not in h.lower()]
+    evidence = kept
+    if len(beyond_abstract) >= min_sections:
+        reasons.append(f"Abstract 以外の分析対象章を {len(beyond_abstract)} 個抽出できる。")
+        return True, reasons, evidence
+
+    # 章分割に失敗しても、十分長い本文なら full text とみなす
+    if len(text) >= min_chars:
+        reasons.append(f"章分割は不十分だが本文が長い ({len(text)} 文字) ため本文ありと判断。")
+        return True, reasons, evidence
+
+    reasons.append("Abstract 以外の本文章を十分に抽出できない。")
+    return False, reasons, evidence
+
+
+def assess_category(text_low: str) -> tuple[str, str, list[str]]:
+    cats = _categories().get("categories", {})
+    scores: dict[str, int] = {}
+    for cat_id, cat in cats.items():
+        scores[cat_id] = _count_hits(text_low, cat.get("keywords", []))
+    ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
+    if not ranked or ranked[0][1] == 0:
+        return "unknown", "unknown", ["6カテゴリのキーワードに該当しない。"]
+    primary = ranked[0][0]
+    secondary = ranked[1][0] if len(ranked) > 1 and ranked[1][1] > 0 else "unknown"
+    name = cats[primary].get("name", primary)
+    return primary, secondary, [f"最も近いカテゴリ: {primary} ({name})。"]
+
+
+def assess_document_type(text_low: str) -> DocumentType:
+    dt_rules = _rules().get("document_type", {})
+    scores: dict[str, int] = {}
+    for dt_name, kws in dt_rules.items():
+        scores[dt_name] = _count_hits(text_low, kws)
+    # teaching_case / thesis / conference_abstract を優先的に判定
+    for special in ("teaching_case", "conference_abstract", "thesis", "conference_paper"):
+        if scores.get(special, 0) >= 1:
+            try:
+                return DocumentType(special)
+            except ValueError:
+                pass
+    if scores.get("report", 0) >= 1:
+        return DocumentType.report
+    if scores.get("journal_article", 0) >= 1:
+        return DocumentType.journal_article
+    return DocumentType.unknown
+
+
+def assess_language(rec: PaperRecord, text: str) -> tuple[str, bool, list[str]]:
+    lang = detect_language(text)
+    translation_required = lang in _rules().get("language", {}).get(
+        "translation_required_langs", ["th", "vi"]
+    )
+    warnings: list[str] = []
+    if translation_required:
+        lang_name = {"th": "Thai", "vi": "Vietnamese"}.get(lang, lang)
+        warnings.append(
+            f"Original full text is {lang_name}; English translation is required "
+            "before KH Coder analysis."
+        )
+    return lang, translation_required, warnings
+
+
+def detected_generation_groups(text_low: str) -> list[str]:
+    """テキストから検出された世代グループ名を返す。"""
+    groups = []
+    for gname, kws in _rules().get("generations", {}).items():
+        if _count_hits(text_low, kws) >= 1:
+            groups.append(gname)
+    return groups
+
+
+def enrich_record(rec: PaperRecord, text: str) -> PaperRecord:
+    """採否を決めずに、テキストから判る軽量メタデータをレコードへ反映する。
+
+    dedupe を screen より前に走らせる標準フローでも、対象国・世代区分・言語が
+    重複判定に使えるようにするためのもの。authors/sample_size など本文から
+    確実に取れない項目は触らない (推測しない)。
+    """
+    text = text or ""
+    text_low = text.lower()
+
+    if rec.target_country in (None, "", "unknown"):
+        country, source, evidence = detect_target_country(full_text=text)
+        if country in ("Thailand", "Vietnam"):
+            rec.target_country = country
+            rec.target_country_source = source
+            rec.target_country_evidence = evidence
+
+    groups = detected_generation_groups(text_low)
+    if groups and not rec.generation_groups:
+        rec.generation_groups = "; ".join(groups)
+        _, n_gen, _, _ = assess_generations(text_low)
+        rec.number_of_generations = n_gen
+
+    if rec.original_language in (None, "", "unknown"):
+        rec.original_language = detect_language(text)
+
+    if rec.document_type == DocumentType.unknown:
+        rec.document_type = assess_document_type(text_low)
+
+    if not rec.title:
+        tg = guess_title(text)
+        if tg:
+            rec.title = tg
+            rec.normalized_title = normalize_title(tg)
+    return rec
+
+
+# ---------------------------------------------------------------------------
+# 統合判定
+# ---------------------------------------------------------------------------
+def screen(rec: PaperRecord, text: str, *, results_discussion_mixed: bool | None = None) -> ScreeningResult:
+    """PaperRecord と本文から ScreeningResult を作る。"""
+    text = text or ""
+    text_low = text.lower()
+
+    country_fit, detected_country, country_source, country_evidence, country_reasons = assess_country(rec, text)
+    is_multi_country, multi_evidence = detect_multi_country(full_text=text)
+    workplace_fit, workplace_reasons = assess_workplace(text_low)
+    generation_fit, n_gen, gen_reasons, gen_warnings = assess_generations(text_low)
+    fulltext_fit, ft_reasons, evidence = assess_fulltext(rec, text)
+    category_fit, secondary, cat_reasons = assess_category(text_low)
+    doc_type = assess_document_type(text_low)
+    lang, translation_required, lang_warnings = assess_language(rec, text)
+
+    reasons = country_reasons + workplace_reasons + gen_reasons + ft_reasons + cat_reasons
+    warnings = gen_warnings + lang_warnings
+
+    # Results/Discussion 混在の検出
+    if results_discussion_mixed is None:
+        st = select_analysis_sections(text)
+        results_discussion_mixed = st.needs_review
+    if results_discussion_mixed:
+        warnings.append("Results と Discussion が混在する章があり、抽出範囲の確認が必要。")
+
+    # ----- 判定ツリー -----
+    decision = ScreeningStatus.accepted
+    reject_reason = ""
+
+    if not country_fit:
+        decision = ScreeningStatus.rejected
+        reject_reason = "対象国が Thailand / Vietnam ではない、または確認できない。"
+    elif doc_type == DocumentType.teaching_case:
+        decision = ScreeningStatus.supplementary
+        reject_reason = "Teaching Case のため主分析には含めず補助文献とする。"
+    elif translation_required:
+        # タイ語/ベトナム語の原文は、英語キーワードでは職場/カテゴリを正しく
+        # 判定できない。誤って除外せず、翻訳後に再判定するため needs_review にする。
+        decision = ScreeningStatus.needs_review
+        reject_reason = (
+            "原文がタイ語/ベトナム語。英訳後に本判定を行うため要確認 "
+            "(translation_required=True)。"
+        )
+    elif doc_type == DocumentType.conference_abstract or not fulltext_fit:
+        # 要旨のみ
+        if not fulltext_fit:
+            decision = ScreeningStatus.supplementary
+            reject_reason = "本文が取得できず要旨のみ。主分析には不十分。"
+        else:
+            decision = ScreeningStatus.supplementary
+            reject_reason = "学会要旨のため補助文献とする。"
+    elif not workplace_fit:
+        decision = ScreeningStatus.rejected
+        reject_reason = "職場・組織文脈が確認できない。"
+    elif not generation_fit:
+        decision = ScreeningStatus.supplementary
+        reject_reason = "2世代以上の比較が確認できない (単一世代/世代比較なし)。"
+    elif category_fit == "unknown":
+        decision = ScreeningStatus.supplementary
+        reject_reason = "6カテゴリのいずれにも明確に該当しない。"
+    elif is_multi_country and not (rec.country_data_separable or rec.country_specific_analysis_available):
+        # TH/VN を含むだけの多国間研究は自動 accepted にしない (国別データ分離可否を要確認)
+        decision = ScreeningStatus.needs_review
+        reject_reason = (
+            f"多国間研究の可能性 ({multi_evidence})。{detected_country} を含むが、国別データの"
+            "分離可否 (country_data_separable / country_specific_analysis_available) が未確認のため要確認。"
+        )
+    else:
+        decision = ScreeningStatus.accepted
+
+    if results_discussion_mixed and decision == ScreeningStatus.accepted:
+        # 採用相当でも章混在があれば人間確認に回す
+        decision = ScreeningStatus.needs_review
+        reject_reason = "採用候補だが Results/Discussion 混在のため要確認。"
+
+    # 信頼度: 満たした観点の割合をベースに
+    fits = [country_fit, workplace_fit, generation_fit, fulltext_fit, category_fit != "unknown"]
+    confidence = round(sum(fits) / len(fits), 3)
+    if decision == ScreeningStatus.accepted:
+        confidence = round(min(0.99, 0.5 + 0.1 * sum(fits)), 3)
+
+    return ScreeningResult(
+        decision=decision,
+        confidence=confidence,
+        country_fit=country_fit,
+        workplace_fit=workplace_fit,
+        generation_fit=generation_fit,
+        fulltext_fit=fulltext_fit,
+        category_fit=category_fit,
+        secondary_category=secondary,
+        duplicate_fit=True,  # 重複は duplicate_checker が別途判定
+        document_type=doc_type,
+        translation_required=translation_required,
+        primary_reason=reject_reason,
+        target_country=detected_country,
+        target_country_source=country_source,
+        target_country_evidence=country_evidence,
+        is_multi_country_study=is_multi_country,
+        country_inclusion_evidence=multi_evidence,
+        reasons=reasons,
+        evidence_sections=evidence,
+        warnings=warnings,
+    )

@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+.pytest_cache/
+
+# 環境変数 (秘密情報)
+.env
+
+# 生成物 (実行時に再生成される)
+db/papers.sqlite
+logs/
+data/01_candidates/*
+data/02_downloaded/*
+data/03_screening/*
+data/04_accepted/*
+data/05_supplementary/*
+data/06_rejected/*
+data/07_duplicates/*
+data/08_cleaned/*
+data/09_translated/*
+data/10_exports/*
+
+# PDF バイナリはコミットしない (権利・容量・合法性)
+*.pdf
+
+# .gitkeep は残してフォルダ構成を維持
+!data/**/.gitkeep
+!db/.gitkeep
+
+# OS
+.DS_Store

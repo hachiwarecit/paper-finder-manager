@@ -1,0 +1,99 @@
+# 6つの分析カテゴリと判定用キーワード
+# screener.py がテキスト中のキーワード出現を数えて category_fit を決める。
+# キーワードはすべて小文字で照合する。
+
+categories:
+  category_1:
+    name: "Stereotypes / Ageism"
+    name_ja: "ステレオタイプ・年齢差別・世代イメージ"
+    keywords:
+      - stereotype
+      - stereotypes
+      - ageism
+      - age discrimination
+      - age bias
+      - generational stereotype
+      - generational image
+      - older worker stereotype
+      - prejudice
+      - intergenerational stereotype
+
+  category_2:
+    name: "Work Values / Ethics / Motivation"
+    name_ja: "仕事価値観・労働倫理・動機づけ・職務満足"
+    keywords:
+      - work value
+      - work values
+      - work ethic
+      - work ethics
+      - motivation
+      - job satisfaction
+      - employee engagement
+      - organizational commitment
+      - work attitude
+      - intrinsic motivation
+      - extrinsic motivation
+
+  category_3:
+    name: "Knowledge Transfer / Reverse Mentoring / Trust"
+    name_ja: "知識移転・暗黙知・リバースメンタリング・信頼"
+    keywords:
+      - knowledge transfer
+      - knowledge transferring
+      - knowledge sharing
+      - tacit knowledge
+      - knowledge creation
+      - reverse mentoring
+      - mentoring
+      - trust
+      - succession
+      - founder
+      - successor
+      - knowledge management
+
+  category_4:
+    name: "Communication / Power Distance / Authority"
+    name_ja: "コミュニケーション・上司部下関係・権威・心理的安全性"
+    keywords:
+      - communication
+      - power distance
+      - authority
+      - leadership style
+      - supervisor
+      - subordinate
+      - psychological safety
+      - hierarchy
+      - leader member exchange
+      - voice behavior
+
+  category_5:
+    name: "Technology Adoption / Change / Digital Transformation"
+    name_ja: "技術受容・デジタル変革・AI・リスキリング・変化対応"
+    keywords:
+      - technology adoption
+      - technology acceptance
+      - technology readiness
+      - digital transformation
+      - digitalization
+      - artificial intelligence
+      - reskilling
+      - upskilling
+      - innovation
+      - change adaptation
+      - digital technology
+
+  category_6:
+    name: "Status Quo Bias / Resistance / Retention / Turnover"
+    name_ja: "現状維持バイアス・変化への抵抗・離職意向・定着・組織変革抵抗"
+    keywords:
+      - status quo bias
+      - resistance to change
+      - resistance
+      - turnover
+      - turnover intention
+      - retention
+      - employee retention
+      - organizational change
+      - change management
+      - intention to leave
+      - quit

@@ -1,0 +1,42 @@
+# 翻訳時に表記を統一するための用語集。
+# translator_prep.py が translation_prompt.txt にこの対訳表を埋め込む。
+# 固有名詞・世代名・専門用語は必ずこの英語表記に統一する。
+
+glossary:
+  # 世代名 (原文がどの言語でもこの英語表記を使う)
+  - source: "เจเนอเรชันเอ็กซ์"   # Thai: Generation X
+    target: "Generation X"
+  - source: "เจเนอเรชันวาย"
+    target: "Generation Y"
+  - source: "เจเนอเรชันแซด"
+    target: "Generation Z"
+  - source: "เบบี้บูมเมอร์"
+    target: "Baby Boomers"
+  - source: "Thế hệ X"            # Vietnamese: Generation X
+    target: "Generation X"
+  - source: "Thế hệ Y"
+    target: "Generation Y"
+  - source: "Thế hệ Z"
+    target: "Generation Z"
+
+  # 専門用語の統一
+  - source: "knowledge transfer"
+    target: "knowledge transfer"
+  - source: "การถ่ายทอดความรู้"
+    target: "knowledge transfer"
+  - source: "ความผูกพันต่อองค์กร"
+    target: "organizational commitment"
+  - source: "การลาออก"
+    target: "turnover"
+
+# 必ず原文のまま保持し、翻訳・改変してはいけないもの
+preserve_verbatim:
+  - "Generation X"
+  - "Generation Y"
+  - "Generation Z"
+  - "Baby Boomers"
+  - "Gen X"
+  - "Gen Y"
+  - "Gen Z"
+  - "Thailand"
+  - "Vietnam"

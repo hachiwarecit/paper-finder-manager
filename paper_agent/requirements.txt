@@ -1,0 +1,23 @@
+# paper_agent 依存パッケージ (Python 3.11+)
+
+# --- 必須 (MVP / Priority A) ---
+pydantic>=2.0.0          # データモデル
+rapidfuzz>=3.0.0         # タイトル類似度・重複判定
+pandas>=2.0.0            # 台帳の集計・クロス集計
+openpyxl>=3.1.0          # Excel 出力
+PyYAML>=6.0              # config 読み込み
+
+# --- PDF 抽出 (どれか1つあれば動作。pymupdf を優先) ---
+PyMuPDF>=1.23.0          # import fitz
+pdfplumber>=0.10.0       # フォールバック
+
+# --- 補助 ---
+langdetect>=1.0.9        # 言語判定 (タイ語/ベトナム語/英語)
+tqdm>=4.65.0             # 進捗バー
+requests>=2.31.0         # OpenAlex / Unpaywall / ダウンロード
+beautifulsoup4>=4.12.0   # ジャーナルページの軽いパース (任意)
+python-dotenv>=1.0.0     # .env 読み込み
+
+# --- 任意 (重い・なくても動作する) ---
+# sentence-transformers>=2.2.0   # 抄録の意味的類似度 (任意)
+# anthropic>=0.39.0              # LLM 判定 (APIキーがある場合のみ)
