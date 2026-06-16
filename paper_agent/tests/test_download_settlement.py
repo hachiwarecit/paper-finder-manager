@@ -136,11 +136,12 @@ def test_summary_states_no_download_target(tmp_path):
 # --- QAラウンド数は non-dry-run で 0 にならない (検索枯渇でも) ---
 def test_qa_rounds_never_zero_in_nondryrun(tmp_path):
     db = _db(tmp_path)
-    cfg = AutopilotConfig(target_n=5, countries=["TH"], categories=[1],
-                          per_query_limit=3, dry_run=False, max_rounds=2)
-    # 1回目で検索枯渇させてから2回目を回す
-    SupervisorAgent(cfg).run(db, fetch=lambda q, l: [])
-    res2 = SupervisorAgent(cfg).run(db, fetch=lambda q, l: [])
+    # dry-run で全クエリを実行し検索空間を尽くす (dry-runには3連続0停止がない)
+    SupervisorAgent(AutopilotConfig(target_n=5, countries=["TH"], categories=[1],
+                                    per_query_limit=3, dry_run=True)).run(db, fetch=lambda q, l: [])
+    # 同一DBで non-dry-run: 検索枯渇で rounds=0 でも final QA が必ず記録される
+    res2 = SupervisorAgent(AutopilotConfig(target_n=5, countries=["TH"], categories=[1],
+                                           per_query_limit=3, dry_run=False)).run(db, fetch=lambda q, l: [])
     assert "尽くした" in res2.stop_reason
-    assert len(res2.qa_reports) >= 1   # 検索枯渇でも最終QAが必ず記録される
+    assert len(res2.qa_reports) >= 1
     db.close()

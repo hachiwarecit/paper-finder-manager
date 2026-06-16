@@ -259,6 +259,75 @@ python -m paper_agent export --format xlsx
 
 ---
 
+## 3.10 収集戦略：厳格N + 手動PDF取得キュー + 100本達成可能性
+
+`accepted N` を厳格に保ったまま、**100本に近づけるための候補母数最大化**と
+**PDFが自動取得できない有望候補の手動取得リスト化**、**到達可能性の可視化**を行います。
+
+### 多国間研究を国別Nに入れない
+
+タイトル/本文に Thailand/Vietnam が出ても、それが**多国間研究**（例:「across 15 countries」、
+cross-national、global perspectives、3カ国以上の明示）なら自動で accepted にしません。
+`is_multi_country_study=True` の論文を N に入れてよいのは、`country_data_separable` または
+`country_specific_analysis_available` が True（＝タイ/ベトナムのデータ・分析が分離可能）と
+**人間が確認したとき**だけです。それ以外は `needs_review`。これらの列は Excel で編集→
+`import-metadata` で設定できます。
+
+### 候補母数の最大化（Phase A）と手動取得キュー（Phase B）
+
+- 検索クエリを **国×カテゴリごとに20パターン以上**（合計 240 クエリ）生成します。
+- 検索ソースを **OpenAlex / Crossref / Semantic Scholar / DOAJ** に拡大（いずれも合法な公開API。
+  Sci-Hub/LibGen/paywall回避/ログイン必須PDF/スクレイピングは行いません）。
+- **PDFが自動取得できなくても候補を捨てません。** DOI・landing・OA URL 等の所在情報を保持し、
+  有望（証拠ベースで対象国TH/VN・2世代・職場・カテゴリ該当）なのに合法PDFが無い候補は
+  `candidate_status=manual_pdf_required`（`manual_priority=high/medium`）として手動取得キューへ。
+
+### feasibility（100本到達の見込み）
+
+```powershell
+python -m paper_agent feasibility --target-n 100
+```
+
+- 現在の accepted N / 達成率
+- high / medium の手動PDF取得候補数
+- 自動PDFだけで100本到達可能か / 手動取得込みで到達可能か
+- 国×カテゴリ別の不足数
+- 100本に届かない場合の理由
+
+### autopilot が追加で出力するファイル
+
+| ファイル | 内容 |
+|----------|------|
+| `data/10_exports/failure_analysis.md` | なぜ候補からNが増えなかったか（パイプライン集計・落ちた理由・ボトルネック） |
+| `data/10_exports/feasibility.md` | 100本到達の見込み（自動のみ/手動込み） |
+| `data/10_exports/manual_pdf_queue.csv` | 手動でPDFを探す対象（所在URL付き） |
+| `data/10_exports/high_priority_candidates.csv` | 上記のうち高優先のみ |
+| `paper_inventory.xlsx` の `Manual_PDF_Queue` シート | 同上（Excelで確認） |
+
+`autopilot_summary.md` にも **達成率（accepted_N/target_N）**、**100本到達の実現可能性**、
+**ボトルネック**を明記します。
+
+### 手動で集めたPDFの投入（候補との自動照合つき）
+
+`high_priority_candidates.csv` を見て人間がPDFを集めたら、フォルダに入れて一括投入します。
+取り込み時に DOI / 正規化タイトル類似で `manual_pdf_queue` の候補と自動照合し、対象国の証拠等を
+引き継ぎます。
+
+```powershell
+python -m paper_agent ingest --input "./data/02_downloaded/TH" --country TH
+python -m paper_agent dedupe-all
+python -m paper_agent screen-all
+python -m paper_agent clean --accepted-only     # accepted を一括で KH Coder 用に整形
+python -m paper_agent analysis-n
+python -m paper_agent feasibility --target-n 100
+python -m paper_agent export --format xlsx
+```
+
+> 重要: 100本に届かなくても、条件に合わない論文を accepted（N）には入れません。
+> 目的は「厳格N」＋「手動PDF取得候補リスト」＋「100本達成可能性の可視化」です。
+
+---
+
 ## 3.7 Windows PowerShell まとめ（実データ検証チートシート）
 
 > 前提: `cd paper_agent` でプロジェクト直下にいること（`config/` `data/` `db/` が見える場所）。

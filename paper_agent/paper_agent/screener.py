@@ -16,6 +16,8 @@ ANTHROPIC_API_KEY があれば LLM 補助も可能だが、無くてもルール
 """
 from __future__ import annotations
 
+import re
+
 from .extractor import guess_title, select_analysis_sections
 from .models import DocumentType, PaperRecord, ScreeningResult, ScreeningStatus
 from .utils import detect_language, get_logger, load_config, normalize_title
@@ -79,6 +81,56 @@ def detect_target_country(title: str = "", abstract: str = "",
             if vn_hit:
                 return "Vietnam", source, f"'{vn_hit}' in {source}"
     return "unknown", "unknown", ""
+
+
+# 多国間研究の判定に使う国名リストと強いマーカー
+_COUNTRY_NAMES = [
+    "thailand", "vietnam", "china", "japan", "korea", "south korea", "india",
+    "indonesia", "malaysia", "philippines", "singapore", "cambodia", "laos",
+    "myanmar", "taiwan", "hong kong", "united states", "usa", "u.s.", "america",
+    "united kingdom", "u.k.", "britain", "germany", "france", "australia",
+    "canada", "brazil", "mexico", "russia", "italy", "spain", "netherlands",
+    "sweden", "norway", "finland", "denmark", "poland", "turkey", "egypt",
+    "nigeria", "south africa", "new zealand", "switzerland", "austria", "belgium",
+]
+_MULTI_MARKERS = [
+    "cross-national", "cross national", "multinational", "multi-national",
+    "multi-country", "multicountry", "global perspectives", "across countries",
+    "international comparison", "comparative study across", "oecd countries",
+    "asean countries", "european countries", "g20", "worldwide", "globally",
+]
+_N_COUNTRIES_RE = re.compile(r"\b(\d{1,2})\s+countries\b")
+
+
+def detect_multi_country(title: str = "", abstract: str = "",
+                         full_text: str = "") -> tuple[bool, str]:
+    """多国間研究かどうかを判定する。返り値 (is_multi, evidence)。
+
+    TH/VN を含むだけの多国間研究を無条件で国別 N に入れないために使う。
+    """
+    text = f"{title}\n{abstract}\n{full_text}".lower()
+    if not text.strip():
+        return False, ""
+
+    # "N countries" (N>=2)
+    m = _N_COUNTRIES_RE.search(text)
+    if m and int(m.group(1)) >= 2:
+        return True, f"'{m.group(0)}' detected"
+
+    # 強い多国間マーカー
+    for mk in _MULTI_MARKERS:
+        if mk in text:
+            return True, f"'{mk}' detected"
+
+    # 3カ国以上が明示されている
+    found = []
+    for c in _COUNTRY_NAMES:
+        if re.search(r"\b" + re.escape(c) + r"\b", text):
+            found.append(c)
+    distinct = set(found)
+    if len(distinct) >= 3:
+        return True, f"{len(distinct)} countries mentioned: {', '.join(sorted(distinct)[:5])}"
+    return False, ""
 
 
 # ---------------------------------------------------------------------------
@@ -289,6 +341,7 @@ def screen(rec: PaperRecord, text: str, *, results_discussion_mixed: bool | None
     text_low = text.lower()
 
     country_fit, detected_country, country_source, country_evidence, country_reasons = assess_country(rec, text)
+    is_multi_country, multi_evidence = detect_multi_country(full_text=text)
     workplace_fit, workplace_reasons = assess_workplace(text_low)
     generation_fit, n_gen, gen_reasons, gen_warnings = assess_generations(text_low)
     fulltext_fit, ft_reasons, evidence = assess_fulltext(rec, text)
@@ -341,6 +394,13 @@ def screen(rec: PaperRecord, text: str, *, results_discussion_mixed: bool | None
     elif category_fit == "unknown":
         decision = ScreeningStatus.supplementary
         reject_reason = "6カテゴリのいずれにも明確に該当しない。"
+    elif is_multi_country and not (rec.country_data_separable or rec.country_specific_analysis_available):
+        # TH/VN を含むだけの多国間研究は自動 accepted にしない (国別データ分離可否を要確認)
+        decision = ScreeningStatus.needs_review
+        reject_reason = (
+            f"多国間研究の可能性 ({multi_evidence})。{detected_country} を含むが、国別データの"
+            "分離可否 (country_data_separable / country_specific_analysis_available) が未確認のため要確認。"
+        )
     else:
         decision = ScreeningStatus.accepted
 
@@ -371,6 +431,8 @@ def screen(rec: PaperRecord, text: str, *, results_discussion_mixed: bool | None
         target_country=detected_country,
         target_country_source=country_source,
         target_country_evidence=country_evidence,
+        is_multi_country_study=is_multi_country,
+        country_inclusion_evidence=multi_evidence,
         reasons=reasons,
         evidence_sections=evidence,
         warnings=warnings,

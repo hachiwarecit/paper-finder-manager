@@ -96,9 +96,29 @@ class SupervisorAgent:
             blockers.append("legality_unknown")
         if c.document_type_guess in ("teaching_case", "conference_abstract"):
             blockers.append(f"document_type={c.document_type_guess}")
+        if c.is_multi_country_study and not (c.country_data_separable
+                                             or c.country_specific_analysis_available):
+            blockers.append("multi_country_unverified")
         if c.candidate_score < self.config.auto_approve_threshold:
             blockers.append(f"candidate_score<{self.config.auto_approve_threshold}")
         return blockers
+
+    def _classify_manual_queue(self, db: PaperDB) -> dict:
+        """pending の有望候補を manual_pdf_required / needs_review に分類する。"""
+        from .candidate_screening import classify_manual
+        counts = {"high": 0, "medium": 0, "needs_review": 0}
+        for c in db.candidates_by_status(CandidateStatus.pending.value):
+            new_status, prio = classify_manual(c)
+            if new_status is None:
+                continue
+            c.candidate_status = CandidateStatus(new_status)
+            c.manual_priority = prio
+            db.upsert_candidate(c)
+            if new_status == "manual_pdf_required":
+                counts[prio] = counts.get(prio, 0) + 1
+            elif new_status == "needs_review":
+                counts["needs_review"] += 1
+        return counts
 
     def _auto_approve(self, candidate_ids: list[str], db: PaperDB) -> list[str]:
         approved = []
@@ -204,6 +224,8 @@ class SupervisorAgent:
                 # 自動承認 (high-confidence のみ)
                 approved = self._auto_approve(cand_ids, db)
                 rlog["auto_approved"] = len(approved)
+                # 自動取得できない有望候補を手動キューへ (捨てない)
+                rlog["manual_queued"] = self._classify_manual_queue(db)
 
                 if not cfg.dry_run:
                     dl = self.downloader.run(db).info
@@ -239,6 +261,9 @@ class SupervisorAgent:
         else:
             result.stop_reason = f"max_rounds 到達 ({max_rounds})"
 
+        # --- 手動キュー分類を最終的に必ず実行 (dry-run でも) ---
+        self._classify_manual_queue(db)
+
         # --- settlement: 非dry-runでは承認済み候補を必ず処理する ---
         if not cfg.dry_run:
             result.settlement = self._settle_pending(db)
@@ -269,8 +294,44 @@ class SupervisorAgent:
             logger.warning("report.md 出力失敗: %s", exc)
 
         self._write_csvs(db)
+        self._write_manual_queue(db)
+        try:
+            from ..diagnostics import failure_analysis_md
+            (EXPORTS / "failure_analysis.md").write_text(
+                failure_analysis_md(db, self.config.target_n), encoding="utf-8")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("failure_analysis.md 出力失敗: %s", exc)
+        try:
+            from ..feasibility import format_md as feasibility_md
+            (EXPORTS / "feasibility.md").write_text(
+                feasibility_md(db, self.config.target_n), encoding="utf-8")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("feasibility.md 出力失敗: %s", exc)
         result.summary_path = self._write_summary(db, result)
         result.qa_report_path = self._write_qa_report(result)
+
+    def _write_manual_queue(self, db: PaperDB) -> None:
+        cands = db.all_candidates()
+        manual = [c for c in cands if c.candidate_status.value in
+                  ("manual_pdf_required", "library_access_required", "contact_author_required")]
+        manual.sort(key=lambda c: (0 if c.manual_priority == "high" else 1, -c.candidate_score))
+        cols = ["candidate_id", "manual_priority", "candidate_status", "title", "authors",
+                "year", "doi", "target_country", "target_country_evidence", "category",
+                "generation_keywords", "workplace_keywords", "source_url", "landing_page_url",
+                "oa_url", "publisher_url", "repository_url", "manual_pdf_search_url",
+                "candidate_score", "is_multi_country_study"]
+
+        def write(path, rows):
+            with path.open("w", encoding="utf-8-sig", newline="") as f:
+                w = csv.writer(f)
+                w.writerow(cols)
+                for c in rows:
+                    w.writerow([getattr(c, col, "") if not isinstance(getattr(c, col, ""), bool)
+                                else ("YES" if getattr(c, col) else "") for col in cols])
+
+        write(EXPORTS / "manual_pdf_queue.csv", manual)
+        write(EXPORTS / "high_priority_candidates.csv",
+              [c for c in manual if c.manual_priority == "high"])
 
     def _write_csvs(self, db: PaperDB) -> None:
         papers = db.all()
@@ -381,15 +442,47 @@ class SupervisorAgent:
         lines.append("")
         lines.append("## N (最終確定)")
         lines.append("")
+        tn = self.config.target_n
+        rate = (s.analysis_n / tn * 100) if tn else 0
         lines.append(f"- 最終 accepted N: **{s.analysis_n}**")
         lines.append(f"- TH accepted N: {s.th_n}")
         lines.append(f"- VN accepted N: {s.vn_n}")
-        if self.config.target_n > s.analysis_n:
+        lines.append(f"- 達成率 (accepted_N / target_N): **{s.analysis_n}/{tn} = {rate:.1f}%**")
+        if tn > s.analysis_n:
             lines.append("")
-            lines.append(f"> ⚠ 目標 {self.config.target_n} に対し {s.analysis_n} 本 "
-                         f"({self.config.target_n - s.analysis_n} 本不足)。"
+            lines.append(f"> ⚠ 目標 {tn} に対し {s.analysis_n} 本 ({tn - s.analysis_n} 本不足)。"
                          "水増しはせず、条件に合う論文のみを N にしています。")
         lines.append("")
+
+        # 100本実現可能性 (feasibility)
+        try:
+            from ..feasibility import compute as _feas
+            from ..diagnostics import bottleneck as _bottleneck
+            f = _feas(db, tn)
+            lines.append("## 100本到達の実現可能性")
+            lines.append("")
+            lines.append(f"- 現在の収集戦略で100本到達 (自動PDFのみ): "
+                         f"**{'可能' if f['auto_only_reaches_target'] else '見込めない'}** "
+                         f"(見込み {f['auto_only_potential']} 本)")
+            lines.append(f"- 手動PDF取得込みで100本到達: "
+                         f"**{'可能' if f['manual_included_reaches_target'] else '見込めない'}** "
+                         f"(見込み {f['manual_included_potential']} 本)")
+            lines.append(f"- 手動PDF取得候補: high={f['high_priority_count']} / medium={f['medium_priority_count']}")
+            lines.append("")
+            lines.append("### なぜ増えなかったか / ボトルネック")
+            lines.append("")
+            lines.append(f"- ボトルネック: {_bottleneck(db)}")
+            for r in f["reasons"]:
+                lines.append(f"- {r}")
+            lines.append("")
+            lines.append("### 次に何を改善すべきか")
+            lines.append("")
+            lines.append("- 詳細は `failure_analysis.md` と `feasibility.md` を参照。")
+            lines.append("- 有望だが自動取得できない候補は `high_priority_candidates.csv` / "
+                         "`manual_pdf_queue.csv` を見て人間が PDF を取得し `ingest` で投入。")
+            lines.append("")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("feasibility 集計失敗: %s", exc)
         lines.append("### 国×カテゴリ別 N")
         lines.append("")
         if s.country_category:

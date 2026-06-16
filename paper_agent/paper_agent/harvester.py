@@ -26,7 +26,13 @@ from .models import (
     DuplicateType,
     PaperRecord,
 )
-from .screener import _categories, _count_hits, _rules, detect_target_country
+from .screener import (
+    _categories,
+    _count_hits,
+    _rules,
+    detect_multi_country,
+    detect_target_country,
+)
 from .utils import get_logger, normalize_title, now_iso
 
 logger = get_logger()
@@ -142,9 +148,19 @@ def make_candidate(work: dict, country: str, category: Optional[str]) -> Candida
         # 検索クエリ由来でしか国が分からない場合は query_only (Thailand とは断定しない)
         tc_source = "query_only"
 
+    is_multi, multi_ev = detect_multi_country(title=title, abstract=abstract)
+
     oa = bool(work.get("open_access_flag"))
     pdf_url = work.get("pdf_url")
     legality = "open access" if (oa and pdf_url) else "unknown (manual check required)"
+
+    # Phase A: 所在情報を最大限保持。PDFが取れなくても DOI/landing で残す。
+    doi = work.get("doi") or None
+    source_url = work.get("source_url")
+    landing = work.get("landing_page_url") or source_url or ""
+    manual_search = work.get("manual_pdf_search_url") or (
+        f"https://doi.org/{doi}" if doi else (source_url or "")
+    )
 
     cand = Candidate(
         candidate_id=_candidate_id(work, country),
@@ -152,17 +168,24 @@ def make_candidate(work: dict, country: str, category: Optional[str]) -> Candida
         normalized_title=normalize_title(title),
         authors=work.get("authors") or "",
         year=work.get("year"),
-        doi=(work.get("doi") or None),
+        doi=doi,
         abstract=abstract,
         source_name=work.get("source_name") or "unknown",
-        source_url=work.get("source_url"),
+        source_url=source_url,
         pdf_url=pdf_url,
+        publisher_url=work.get("publisher_url") or "",
+        repository_url=work.get("repository_url") or "",
+        oa_url=work.get("oa_url") or (pdf_url if oa else "") or "",
+        landing_page_url=landing,
+        manual_pdf_search_url=manual_search,
         country=query_country,
         query_country=query_country,
         category=best_cat or (category or "unknown"),
         target_country=tc,
         target_country_source=tc_source,
         target_country_evidence=tc_evidence,
+        is_multi_country_study=is_multi,
+        country_inclusion_evidence=multi_ev,
         generation_keywords="; ".join(gen_terms),
         workplace_keywords="; ".join(wp_terms),
         category_keywords="; ".join(cat_terms),
@@ -244,10 +267,19 @@ def candidate_dedupe(cand: Candidate, existing_papers: list[PaperRecord],
 # 検索集約
 # ---------------------------------------------------------------------------
 def _fetch_works(query: str, limit: int) -> list[dict]:
-    """OpenAlex + Crossref を検索し、DOI/正規化タイトルで重複排除して返す。"""
+    """複数ソースを検索し、DOI/正規化タイトルで重複排除して返す。
+
+    合法な公開 API のみ: OpenAlex / Crossref / Semantic Scholar / DOAJ。
+    各ソースはネットワーク不通でも [] を返すので全体は止まらない。
+    """
+    from . import search_doaj, search_semantic_scholar
+
     works: list[dict] = []
-    works += search_openalex.search_normalized(query, limit=limit)
-    works += search_crossref.search_normalized(query, limit=limit)
+    for source in (search_openalex, search_crossref, search_semantic_scholar, search_doaj):
+        try:
+            works += source.search_normalized(query, limit=limit)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("検索ソース %s 失敗: %s", getattr(source, "__name__", source), exc)
 
     seen: set[str] = set()
     deduped: list[dict] = []
@@ -257,7 +289,7 @@ def _fetch_works(query: str, limit: int) -> list[dict]:
             continue
         seen.add(key)
         deduped.append(w)
-    return deduped[:limit]
+    return deduped  # 複数ソース分は limit で切らない (母数最大化)
 
 
 # ---------------------------------------------------------------------------

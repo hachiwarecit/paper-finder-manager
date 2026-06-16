@@ -1,5 +1,6 @@
-"""SearchPlannerAgent: 国×カテゴリごとに検索クエリを生成する。
+"""SearchPlannerAgent: 国×カテゴリごとに多数の検索クエリを生成する。
 
+母数を最大化するため、各 (国, カテゴリ) について 20 パターン以上のクエリを作る。
 同じクエリを繰り返さないよう、実行済みは search_history に記録される。
 """
 from __future__ import annotations
@@ -8,28 +9,39 @@ from .base import AgentResult, logger
 
 COUNTRY_NAME = {"TH": "Thailand", "VN": "Vietnam"}
 
-# カテゴリごとのクエリ語パターン (複数パターンで検索空間を広げる)
-CATEGORY_TERMS: dict[int, list[str]] = {
-    1: ["workplace stereotypes ageism", "age discrimination employees",
-        "generational stereotypes organization"],
-    2: ["work values employees", "work ethic motivation job satisfaction",
-        "organizational commitment generations"],
-    3: ["knowledge transfer workforce", "reverse mentoring tacit knowledge",
-        "succession founder successor firm"],
-    4: ["leadership styles employees", "communication power distance workplace",
-        "psychological safety supervisor subordinate"],
-    5: ["technology adoption digital transformation", "AI reskilling workforce",
-        "technology acceptance employees"],
-    6: ["resistance to change organization", "turnover intention retention employees",
-        "status quo bias organizational change"],
-}
-
-# 各クエリに共通で足す世代アンカー
-GENERATION_ANCHORS = [
+# 国非依存の検索アングル (世代・職場の切り口を変えて母数を増やす) — 20個
+BASE_ANGLES = [
     "multigenerational workforce",
-    "Gen X Gen Y Gen Z employees",
-    "generational differences workplace",
+    "generational differences employees",
+    "Gen X Gen Y Gen Z workplace",
+    "age diversity workplace",
+    "intergenerational workplace",
+    "older younger workers organization",
+    "work values generations employees",
+    "knowledge transfer older younger employees",
+    "reverse mentoring workplace generations",
+    "workplace communication generations",
+    "leadership generations workplace",
+    "digital transformation employees generations",
+    "technology acceptance generations employees",
+    "change resistance employees generations",
+    "employee retention generations",
+    "job satisfaction Gen X Gen Y Gen Z",
+    "organizational commitment generations",
+    "multigenerational management",
+    "age discrimination workplace",
+    "intergenerational collaboration workplace",
 ]
+
+# カテゴリごとに掛け合わせる語 (検索をカテゴリ寄りにする)
+CATEGORY_TERMS: dict[int, str] = {
+    1: "ageism stereotype age discrimination",
+    2: "work values work ethic motivation job satisfaction",
+    3: "knowledge transfer reverse mentoring tacit knowledge succession",
+    4: "communication leadership power distance psychological safety",
+    5: "technology adoption digital transformation AI reskilling",
+    6: "resistance to change status quo bias turnover intention retention",
+}
 
 
 class SearchPlannerAgent:
@@ -40,23 +52,23 @@ class SearchPlannerAgent:
         self.categories = categories
 
     def plan(self) -> list[dict]:
-        """(country, category, query) の決定論的リストを返す。"""
+        """(country, category, query) の決定論的リストを返す。各国×カテゴリ20件以上。"""
         out: list[dict] = []
+        seen: set[str] = set()
         for country in self.countries:
             name = COUNTRY_NAME.get(country, country)
             for cat in self.categories:
-                terms = CATEGORY_TERMS.get(cat, [])
-                anchors = GENERATION_ANCHORS
-                # cat 語 × anchor を組み合わせる (パターンを増やす)
-                for i, term in enumerate(terms):
-                    anchor = anchors[i % len(anchors)]
-                    query = f"{name} {anchor} {term}"
+                cat_term = CATEGORY_TERMS.get(cat, "")
+                for angle in BASE_ANGLES:
+                    query = f"{name} {angle} {cat_term}".strip()
+                    if query in seen:
+                        continue
+                    seen.add(query)
                     out.append({"country": country, "category": f"category_{cat}",
                                 "query": query})
         return out
 
     def next_query(self, db) -> dict | None:
-        """search_history に無い未実行クエリを1つ返す。無ければ None。"""
         for item in self.plan():
             if not db.search_seen(item["query"]):
                 return item
@@ -70,6 +82,7 @@ class SearchPlannerAgent:
         item = self.next_query(db)
         res.info["next"] = item
         res.info["remaining"] = self.remaining(db)
+        res.info["total_planned"] = len(self.plan())
         if item is None:
             res.add("検索空間を尽くしました (未実行クエリなし)。")
         else:

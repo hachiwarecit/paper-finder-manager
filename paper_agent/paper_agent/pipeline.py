@@ -106,6 +106,9 @@ def apply_screen(rec: PaperRecord, db: PaperDB) -> str:
     rec.original_language = detect_language(text)
     rec.full_text_available = result.fulltext_fit
     rec.workplace_fit = result.workplace_fit
+    rec.is_multi_country_study = result.is_multi_country_study
+    if result.country_inclusion_evidence:
+        rec.country_inclusion_evidence = result.country_inclusion_evidence
     if result.category_fit != "unknown":
         rec.category = result.category_fit
     if result.translation_required:

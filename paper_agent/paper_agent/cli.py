@@ -194,6 +194,17 @@ def cmd_screen_all(args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------------------
 def cmd_clean(args: argparse.Namespace) -> int:
     db = PaperDB()
+    if getattr(args, "accepted_only", False):
+        from .agents.cleaner_agent import CleanerAgent
+        res = CleanerAgent().run(db)
+        db.close()
+        print(f"accepted 論文をクリーニング: {res.info.get('cleaned', 0)} 件 "
+              f"(翻訳要でスキップ {len(res.info.get('skipped_translation_required', []))} 件)")
+        return 0
+    if not args.paper_id:
+        print("--paper-id または --accepted-only を指定してください。", file=sys.stderr)
+        db.close()
+        return 1
     rec = db.get(args.paper_id)
     if not rec:
         print(f"見つかりません: {args.paper_id}", file=sys.stderr)
@@ -366,6 +377,25 @@ def cmd_analysis_n(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
+# feasibility (100本到達の見込み)
+# ---------------------------------------------------------------------------
+def cmd_feasibility(args: argparse.Namespace) -> int:
+    from .feasibility import format_md
+
+    db = PaperDB()
+    try:
+        md = format_md(db, args.target_n)
+    finally:
+        db.close()
+    out = DATA_DIR / "10_exports" / "feasibility.md"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(md, encoding="utf-8")
+    print(md)
+    print(f"\n(保存: {out})")
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # autopilot (エージェント型ワークフロー)
 # ---------------------------------------------------------------------------
 def cmd_autopilot(args: argparse.Namespace) -> int:
@@ -453,7 +483,9 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("screen-all", help="採否判定 (全件)").set_defaults(func=cmd_screen_all)
 
     sp = sub.add_parser("clean", help="KH Coder 用クリーニング")
-    sp.add_argument("--paper-id", required=True)
+    sp.add_argument("--paper-id", default=None)
+    sp.add_argument("--accepted-only", action="store_true",
+                    help="accepted 論文すべてを一括クリーニング")
     sp.set_defaults(func=cmd_clean)
 
     sp = sub.add_parser("prepare-translation", help="翻訳準備")
@@ -478,6 +510,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("analysis-n", help="最終的に N に数える論文を集計")
     sp.set_defaults(func=cmd_analysis_n)
+
+    sp = sub.add_parser("feasibility", help="目標N (例: 100本) の到達見込みを判定")
+    sp.add_argument("--target-n", type=int, default=100)
+    sp.set_defaults(func=cmd_feasibility)
 
     sp = sub.add_parser("autopilot", help="エージェント型ワークフローで候補収集〜N確保を自律実行")
     sp.add_argument("--target-n", type=int, default=100, help="目標 accepted N (既定100)")

@@ -88,6 +88,20 @@ def test_empty_country_evidence_not_counted():
     assert is_analysis_n(_ok(target_country_evidence="")) is False
 
 
+def test_multi_country_study_not_counted_without_separable():
+    # TH/VNを含むだけの多国間研究は N に入れない
+    assert is_analysis_n(_ok(is_multi_country_study=True)) is False
+
+
+def test_multi_country_counted_if_data_separable():
+    assert is_analysis_n(_ok(is_multi_country_study=True, country_data_separable=True)) is True
+
+
+def test_multi_country_counted_if_country_specific_analysis():
+    assert is_analysis_n(_ok(is_multi_country_study=True,
+                             country_specific_analysis_available=True)) is True
+
+
 def test_summary_counts_only_qualifying():
     records = [
         _ok("A", target_country="Thailand", category="category_5"),

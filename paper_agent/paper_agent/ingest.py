@@ -11,7 +11,7 @@ from typing import Optional
 
 from .db import PaperDB
 from .extractor import extract_text, guess_title
-from .models import PaperRecord, ScreeningStatus
+from .models import CandidateStatus, PaperRecord, ScreeningStatus
 from .utils import (
     DATA_DIR,
     detect_language,
@@ -26,6 +26,32 @@ logger = get_logger()
 
 COUNTRY_NAME = {"TH": "Thailand", "VN": "Vietnam", "JP": "Japan"}
 TEXT_DIR = "03_screening"
+
+
+def match_candidate(db: PaperDB, title: str, doi, authors: str = "", year=None):
+    """取り込んだ PDF を candidates (manual_pdf_queue 等) と照合する。
+
+    DOI 完全一致 → 正規化タイトル類似 (>=88) の順で最良候補を返す。無ければ None。
+    """
+    cands = db.all_candidates()
+    if doi:
+        d = str(doi).strip().lower()
+        for c in cands:
+            if c.doi and c.doi.strip().lower() == d:
+                return c
+    from rapidfuzz import fuzz
+    nt = normalize_title(title)
+    if not nt:
+        return None
+    best, best_score = None, 0.0
+    for c in cands:
+        cnt = c.normalized_title or normalize_title(c.title)
+        if not cnt:
+            continue
+        score = fuzz.token_sort_ratio(nt, cnt)
+        if score > best_score:
+            best, best_score = c, score
+    return best if best and best_score >= 88 else None
 
 
 def make_paper_id(stem: str, country: str, db: PaperDB) -> str:
@@ -100,6 +126,29 @@ def ingest_file(path: str | Path, country: str, db: PaperDB, *,
             if tg:
                 rec.title = tg
         rec.normalized_title = normalize_title(rec.title)
+
+        # 手動取り込み (seed に candidate_id が無い) の場合、候補と照合してリンクする
+        if not seed.get("candidate_id"):
+            matched = match_candidate(db, rec.title, rec.doi, rec.authors, rec.year)
+            if matched is not None:
+                rec.notes = (rec.notes + "; " if rec.notes else "") + \
+                    f"matched candidate {matched.candidate_id}"
+                if not rec.source_url and matched.source_url:
+                    rec.source_url = matched.source_url
+                if rec.category == "unknown" and matched.category != "unknown":
+                    rec.category = matched.category
+                # 候補メタ由来の対象国 (証拠ベース) を引き継ぐ
+                if (rec.target_country == "unknown"
+                        and matched.target_country in ("Thailand", "Vietnam")
+                        and matched.target_country_source in ("title", "abstract", "full_text", "metadata")):
+                    rec.target_country = matched.target_country
+                    rec.target_country_source = "metadata"
+                    rec.target_country_evidence = matched.target_country_evidence or "from matched candidate"
+                # 候補側を取得済みに更新
+                matched.candidate_status = CandidateStatus.screened
+                matched.downloaded_path = str(path)
+                matched.download_status = "success"
+                db.upsert_candidate(matched)
         db.upsert(rec)
         if res.error:
             logger.warning("%s: 抽出に問題 (%s)", pid, res.error)

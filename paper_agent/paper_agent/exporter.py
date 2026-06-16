@@ -66,11 +66,14 @@ def _record_to_export_row(rec: PaperRecord) -> dict:
 
 # Candidates シートの列 (人間が編集できる。candidate_status を編集 → import-metadata)
 CANDIDATE_COLUMNS = [
-    "candidate_id", "candidate_status", "candidate_score", "duplicate_status",
-    "duplicate_of", "same_dataset_warning", "title", "authors", "year", "doi",
-    "query_country", "category", "target_country", "target_country_source",
-    "target_country_evidence", "generation_keywords", "workplace_keywords",
-    "category_keywords", "document_type_guess", "open_access_flag", "pdf_url",
+    "candidate_id", "candidate_status", "manual_priority", "candidate_score",
+    "duplicate_status", "duplicate_of", "same_dataset_warning", "title", "authors",
+    "year", "doi", "query_country", "category", "target_country",
+    "target_country_source", "target_country_evidence", "is_multi_country_study",
+    "country_data_separable", "country_specific_analysis_available",
+    "generation_keywords", "workplace_keywords", "category_keywords",
+    "document_type_guess", "open_access_flag", "pdf_url", "oa_url",
+    "landing_page_url", "publisher_url", "repository_url", "manual_pdf_search_url",
     "source_name", "source_url", "legality_note", "auto_approve_reason",
     "auto_approve_blockers", "download_status", "download_error", "attempted_url",
     "downloaded_path", "download_timestamp", "notes",
@@ -81,6 +84,15 @@ def _candidate_to_row(c) -> dict:
     return {
         "candidate_id": c.candidate_id,
         "candidate_status": c.candidate_status.value if hasattr(c.candidate_status, "value") else str(c.candidate_status),
+        "manual_priority": c.manual_priority,
+        "is_multi_country_study": "YES" if c.is_multi_country_study else "",
+        "country_data_separable": "YES" if c.country_data_separable else "",
+        "country_specific_analysis_available": "YES" if c.country_specific_analysis_available else "",
+        "oa_url": c.oa_url,
+        "landing_page_url": c.landing_page_url,
+        "publisher_url": c.publisher_url,
+        "repository_url": c.repository_url,
+        "manual_pdf_search_url": c.manual_pdf_search_url,
         "candidate_score": c.candidate_score,
         "duplicate_status": c.duplicate_status.value if hasattr(c.duplicate_status, "value") else str(c.duplicate_status),
         "duplicate_of": c.duplicate_of or "",
@@ -197,6 +209,9 @@ def _export_xlsx(rows: list[dict], records: list[PaperRecord],
     cand_df = pd.DataFrame(cand_rows, columns=CANDIDATE_COLUMNS)
     cand_dups = [r for r in cand_rows if r["duplicate_status"] in ("exact_duplicate", "probable_duplicate")]
     cand_review = [r for r in cand_rows if r["candidate_status"] == "needs_review"]
+    cand_manual = [r for r in cand_rows if r["candidate_status"] in
+                   ("manual_pdf_required", "library_access_required", "contact_author_required")]
+    cand_manual.sort(key=lambda r: (0 if r.get("manual_priority") == "high" else 1))
 
     sheets = {
         "All_Papers": all_df,
@@ -211,6 +226,7 @@ def _export_xlsx(rows: list[dict], records: list[PaperRecord],
         "Candidates": cand_df,
         "Candidate_Duplicates": pd.DataFrame(cand_dups, columns=CANDIDATE_COLUMNS),
         "Candidate_Needs_Review": pd.DataFrame(cand_review, columns=CANDIDATE_COLUMNS),
+        "Manual_PDF_Queue": pd.DataFrame(cand_manual, columns=CANDIDATE_COLUMNS),
     }
 
     try:

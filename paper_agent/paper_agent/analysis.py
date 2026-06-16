@@ -32,6 +32,9 @@ def is_analysis_n(rec: PaperRecord) -> bool:
     確認できたものだけを認める。query_only / unknown は N に入れない。
     """
     dt = rec.document_type
+    # 多国間研究は、国別データが分離可能 or 国別分析がある場合のみ N に入れてよい
+    multi_ok = (not rec.is_multi_country_study) or \
+        rec.country_data_separable or rec.country_specific_analysis_available
     return (
         rec.screening_status == ScreeningStatus.accepted
         and not (rec.duplicate_of or "").strip()
@@ -43,6 +46,7 @@ def is_analysis_n(rec: PaperRecord) -> bool:
         and bool((rec.target_country_evidence or "").strip())
         and rec.workplace_fit is True
         and dt not in _EXCLUDED_DOC_TYPES
+        and multi_ok
     )
 
 
