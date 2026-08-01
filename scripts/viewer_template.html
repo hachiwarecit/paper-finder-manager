@@ -1,0 +1,456 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>応用情報 用語分類ドリル</title>
+<style>
+:root{
+  --bg:#0e1014; --surface:#171a21; --surface2:#1f232c; --line:#2a2f3a;
+  --fg:#e7e9ee; --muted:#98a1b2;
+  --ok:#2f9e63; --ok-dim:#16341f; --ng:#c9483f; --ng-dim:#3a1a19;
+  --accent:#5b8def;
+  --tap:56px;
+  --sat:env(safe-area-inset-top); --sab:env(safe-area-inset-bottom);
+  --sal:env(safe-area-inset-left); --sar:env(safe-area-inset-right);
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{height:100%}
+body{
+  margin:0;background:var(--bg);color:var(--fg);
+  font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Noto Sans JP","Yu Gothic",sans-serif;
+  font-size:16px;line-height:1.5;
+  overscroll-behavior:none;
+}
+#app{
+  height:100dvh;max-width:520px;margin:0 auto;
+  display:flex;flex-direction:column;
+  padding:var(--sat) var(--sar) var(--sab) var(--sal);
+}
+.screen{flex:1;min-height:0;display:none;flex-direction:column}
+.screen.on{display:flex}
+
+/* ---- 進捗バー: 数字より残量 ---- */
+#bar{height:3px;background:var(--surface2);flex:none}
+#bar>i{display:block;height:100%;width:0;background:var(--accent);transition:width .18s ease}
+
+/* ---- 開始画面 ---- */
+#start{padding:16px;overflow-y:auto}
+h1{font-size:19px;margin:4px 0 2px}
+.sub{color:var(--muted);font-size:13px;margin:0 0 14px}
+.note{background:var(--surface);border:1px solid var(--line);border-radius:10px;
+  padding:10px 12px;font-size:12.5px;color:var(--muted);margin:0 0 16px}
+.big{
+  display:flex;align-items:center;justify-content:center;
+  width:100%;min-height:var(--tap);border-radius:12px;border:1px solid var(--line);
+  background:var(--surface2);color:var(--fg);font-size:16px;font-weight:600;
+  margin-bottom:10px;cursor:pointer;
+}
+.big.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.big:disabled{opacity:.4}
+.rowlabel{font-size:12px;color:var(--muted);margin:14px 0 6px;display:flex;justify-content:space-between}
+.rowlabel button{background:none;border:none;color:var(--accent);font-size:12px;padding:4px;cursor:pointer}
+#cats{display:flex;flex-wrap:wrap;gap:6px}
+.chip{
+  border:1px solid var(--line);background:var(--surface);color:var(--muted);
+  border-radius:999px;padding:8px 11px;font-size:12.5px;cursor:pointer;
+  min-height:38px;display:flex;align-items:center;
+}
+.chip[aria-pressed="true"]{background:#1d2b4a;border-color:var(--accent);color:#dbe6ff}
+
+/* ---- 出題画面: 上半分に問題, 下半分に選択肢 ---- */
+#quiz{padding:0}
+#qtop{
+  flex:1 1 45%;min-height:0;display:flex;flex-direction:column;
+  justify-content:center;padding:14px 16px;overflow-y:auto;
+}
+#kind{font-size:11px;color:var(--muted);letter-spacing:.08em;margin-bottom:8px}
+#stem{font-size:15px;color:var(--muted);margin-bottom:6px}
+#focus{font-size:26px;font-weight:700;line-height:1.3;word-break:break-word}
+#focus small{display:block;font-size:13px;font-weight:400;color:var(--muted);margin-top:6px}
+
+#opts{
+  flex:0 0 auto;display:flex;flex-direction:column;gap:8px;
+  padding:8px 12px calc(12px + var(--sab));
+}
+.opt{
+  display:flex;align-items:center;gap:10px;
+  min-height:var(--tap);width:100%;
+  border:1px solid var(--line);border-radius:12px;background:var(--surface);
+  color:var(--fg);font-size:15.5px;text-align:left;padding:10px 12px;
+  cursor:pointer;
+}
+.opt .n{
+  flex:none;width:22px;height:22px;border-radius:6px;background:var(--surface2);
+  color:var(--muted);font-size:11px;display:flex;align-items:center;justify-content:center;
+}
+.opt .t{flex:1;min-width:0;word-break:break-word}
+.opt[data-s="ok"]{background:var(--ok-dim);border-color:var(--ok)}
+.opt[data-s="ng"]{background:var(--ng-dim);border-color:var(--ng)}
+.opt[data-s="ok"] .n{background:var(--ok);color:#fff}
+.opt[data-s="ng"] .n{background:var(--ng);color:#fff}
+.opt[data-s="dim"]{opacity:.45}
+
+/* ---- 解答後の比較 ----
+   解答すると問題文を 1 行に畳み、空いた領域を比較カードに渡す。
+   正解と、選んでしまった誤答を必ず同時に見せるため。 */
+#quiz.answered #qtop{flex:0 0 auto;padding:10px 16px 4px;overflow:visible}
+#quiz.answered #stem{display:none}
+#quiz.answered #focus{font-size:17px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#quiz.answered #focus small{display:none}
+/* 選ばれなかった選択肢は畳んで、比較カードに高さを譲る。
+   正解と自分が選んだものは 56px のまま残す。 */
+#quiz.answered .opt[data-s="dim"]{min-height:0;height:34px;font-size:13px;padding:4px 12px}
+#detail{display:none;flex:1 1 auto;min-height:0;overflow-y:auto;padding:0 16px 10px}
+#detail.on{display:block}
+.card{background:var(--surface);border:1px solid var(--line);border-left-width:3px;
+  border-radius:10px;padding:10px 12px;margin-bottom:8px}
+.card.ok{border-left-color:var(--ok)}
+.card.ng{border-left-color:var(--ng)}
+.card .h{font-size:11px;letter-spacing:.06em;margin-bottom:4px}
+.card.ok .h{color:var(--ok)}
+.card.ng .h{color:var(--ng)}
+.card .term{font-size:16px;font-weight:600;margin-bottom:3px}
+.card .path{font-size:12px;color:var(--muted)}
+/* 項目の内容文 (IPA 原文) は補足なので 5 行で抑える。
+   比較の主役は上の分類パスで、これが長いと 2 枚目のカードが画面外に落ちる。 */
+.card .body{font-size:12.5px;color:var(--muted);margin-top:6px;padding-top:6px;border-top:1px solid var(--line);
+  display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:5;overflow:hidden}
+#hint{text-align:center;font-size:11.5px;color:var(--muted);padding:6px 0 calc(8px + var(--sab))}
+
+/* ---- 終了画面 ---- */
+#end{padding:16px;overflow-y:auto}
+#end h2{font-size:17px;margin:2px 0 12px}
+.miss{background:var(--surface);border:1px solid var(--line);border-radius:10px;
+  padding:10px 12px;margin-bottom:8px}
+.miss .term{font-weight:600;font-size:15px}
+.miss .path{font-size:12px;color:var(--muted);margin-top:2px}
+.allok{color:var(--ok);font-size:14px;margin-bottom:14px}
+
+@media (min-width:560px){ #focus{font-size:30px} }
+@media (prefers-reduced-motion:reduce){ *{transition:none!important;animation:none!important} }
+</style>
+
+<div id="app">
+  <div id="bar"><i></i></div>
+
+  <!-- 開始画面 -->
+  <section id="start" class="screen on">
+    <h1>応用情報 用語分類ドリル</h1>
+    <p class="sub">IPA シラバス Ver.7.2 ／ <span id="nterms"></span> 語</p>
+    <div class="note" id="disclaimer"></div>
+
+    <button class="big primary" id="go">はじめる（10問）</button>
+    <button class="big" id="goreview">復習のみ <span id="rcount"></span></button>
+
+    <div class="rowlabel">
+      <span>出題範囲</span>
+      <span><button id="all">全選択</button><button id="none">全解除</button></span>
+    </div>
+    <div id="cats"></div>
+  </section>
+
+  <!-- 出題画面 -->
+  <section id="quiz" class="screen">
+    <div id="qtop">
+      <div id="kind"></div>
+      <div id="stem"></div>
+      <div id="focus"></div>
+    </div>
+    <div id="detail"></div>
+    <div id="opts"></div>
+    <div id="hint"></div>
+  </section>
+
+  <!-- 終了画面 -->
+  <section id="end" class="screen">
+    <h2>今回のセッション</h2>
+    <div id="misslist"></div>
+    <button class="big primary" id="again">つづける（10問）</button>
+    <button class="big" id="back">範囲を選びなおす</button>
+  </section>
+</div>
+
+<script id="quizdata" type="application/json">__QUIZ_DATA__</script>
+<script>
+(function(){
+"use strict";
+var D = JSON.parse(document.getElementById("quizdata").textContent);
+var TERMS = D.terms_data, SUBS = D.subcategories, CATS = D.categories,
+    TOPICS = D.topics, TTEXT = D.topic_texts, QS = D.questions;
+var PER_SESSION = 10;
+
+// ---- 保存領域: localStorage が使えなければメモリで続行 (file:// 等) ----
+var mem = {}, useLS = false;
+try {
+  var k = "__t"; localStorage.setItem(k, "1"); localStorage.removeItem(k); useLS = true;
+} catch (e) { useLS = false; }
+var KEY = "ap-term-drill-v1";
+function load(){
+  try { var raw = useLS ? localStorage.getItem(KEY) : mem[KEY];
+        return raw ? JSON.parse(raw) : null; } catch(e){ return null; }
+}
+function save(o){
+  try { var s = JSON.stringify(o); if (useLS) localStorage.setItem(KEY, s); else mem[KEY] = s; }
+  catch(e){ mem[KEY] = JSON.stringify(o); }   // 容量超過などでも黙って続行
+}
+var st = load() || {wrong:[], done:[], cats:null};
+if (!Array.isArray(st.wrong)) st.wrong = [];
+if (!Array.isArray(st.done)) st.done = [];
+
+var $ = function(s){ return document.querySelector(s); };
+function subName(i){ return SUBS[i][0]; }
+function catOf(i){ return CATS[SUBS[i][1]]; }
+function catIdxOfSub(i){ return SUBS[i][1]; }
+function tName(i){ return TERMS[i][0]; }
+function tSub(i){ return TERMS[i][1]; }
+function tTopic(i){ return TERMS[i][2]; }
+function tAbbr(i){ return TERMS[i][4]; }
+function qCat(q){ return catIdxOfSub(q.c); }
+function pathOf(ti){
+  return catOf(tSub(ti)) + " › " + subName(tSub(ti)) + " › " + TOPICS[tTopic(ti)];
+}
+function shuffle(a){
+  for (var i=a.length-1;i>0;i--){ var j=Math.floor(Math.random()*(i+1)); var t=a[i];a[i]=a[j];a[j]=t; }
+  return a;
+}
+
+// ---- 開始画面 ----
+$("#nterms").textContent = D.meta.terms.toLocaleString("ja-JP");
+$("#disclaimer").textContent = D.meta.note;
+
+var selected = {};
+CATS.forEach(function(_, i){ selected[i] = st.cats ? st.cats.indexOf(i) >= 0 : true; });
+var catsEl = $("#cats");
+CATS.forEach(function(name, i){
+  var b = document.createElement("button");
+  b.className = "chip"; b.type = "button"; b.textContent = name;
+  b.setAttribute("aria-pressed", String(!!selected[i]));
+  b.addEventListener("click", function(){
+    selected[i] = !selected[i];
+    b.setAttribute("aria-pressed", String(!!selected[i]));
+    syncStart();
+  });
+  catsEl.appendChild(b);
+});
+function setAll(v){
+  CATS.forEach(function(_, i){ selected[i] = v; });
+  Array.prototype.forEach.call(catsEl.children, function(b, i){
+    b.setAttribute("aria-pressed", String(v));
+  });
+  syncStart();
+}
+$("#all").addEventListener("click", function(){ setAll(true); });
+$("#none").addEventListener("click", function(){ setAll(false); });
+
+function chosenCats(){
+  return Object.keys(selected).filter(function(k){ return selected[k]; }).map(Number);
+}
+function syncStart(){
+  var n = chosenCats().length;
+  $("#go").disabled = n === 0;
+  $("#go").textContent = n === 0 ? "範囲を1つ以上選ぶ" : "はじめる（10問）";
+  var rq = reviewPool().length;
+  $("#rcount").textContent = rq ? "（" + rq + "）" : "（なし）";
+  $("#goreview").disabled = rq === 0;
+}
+function reviewPool(){
+  var cs = {}; chosenCats().forEach(function(c){ cs[c] = 1; });
+  return st.wrong.filter(function(qi){ return QS[qi] && cs[qCat(QS[qi])]; });
+}
+
+// ---- セッション組み立て ----
+var session = [], pos = 0, misses = [], answered = false, current = null, order = [];
+
+function buildSession(reviewOnly){
+  var cs = {}; chosenCats().forEach(function(c){ cs[c] = 1; });
+  var done = {}; st.done.forEach(function(i){ done[i] = 1; });
+  var review = reviewPool();
+  var out = review.slice(0, PER_SESSION);          // 間違えた問題を優先
+  if (!reviewOnly && out.length < PER_SESSION){
+    var pool = [], seen = [];
+    for (var i=0;i<QS.length;i++){
+      if (!cs[qCat(QS[i])]) continue;
+      if (out.indexOf(i) >= 0) continue;
+      (done[i] ? seen : pool).push(i);
+    }
+    shuffle(pool); shuffle(seen);
+    var rest = pool.concat(seen);                   // 未出題を先に
+    out = out.concat(rest.slice(0, PER_SESSION - out.length));
+  }
+  return shuffle(out);
+}
+
+function show(id){
+  ["start","quiz","end"].forEach(function(s){ $("#"+s).classList.toggle("on", s === id); });
+}
+function startSession(reviewOnly){
+  session = buildSession(reviewOnly);
+  if (!session.length){ return; }
+  st.cats = chosenCats(); save(st);
+  pos = 0; misses = [];
+  show("quiz"); render();
+}
+$("#go").addEventListener("click", function(){ startSession(false); });
+$("#goreview").addEventListener("click", function(){ startSession(true); });
+$("#again").addEventListener("click", function(){ startSession(false); });
+$("#back").addEventListener("click", function(){ syncStart(); show("start"); });
+
+// ---- 出題 ----
+function render(){
+  answered = false; current = QS[session[pos]];
+  $("#quiz").classList.remove("answered");
+  $("#bar>i").style.width = (pos / PER_SESSION * 100) + "%";
+  $("#detail").className = ""; $("#detail").innerHTML = "";
+  $("#hint").textContent = "";
+
+  var q = current, optsEl = $("#opts");
+  optsEl.innerHTML = "";
+
+  if (q.k === "odd"){
+    $("#kind").textContent = "仲間はずれ";
+    $("#stem").textContent = "次のうち、この分類に属さない用語は？";
+    $("#focus").innerHTML = "";
+    $("#focus").appendChild(document.createTextNode(subName(q.c)));
+    var s = document.createElement("small"); s.textContent = catOf(q.c);
+    $("#focus").appendChild(s);
+    order = shuffle([{v:q.a, ok:true}].concat(q.o.map(function(i){ return {v:i, ok:false}; })));
+    order.forEach(function(o, i){ optsEl.appendChild(mkOpt(i, tName(o.v), o)); });
+  } else {
+    $("#kind").textContent = "分類当て";
+    $("#stem").textContent = "この用語はどの分類？";
+    $("#focus").innerHTML = "";
+    $("#focus").appendChild(document.createTextNode(tName(q.a)));
+    if (tAbbr(q.a)){
+      var s2 = document.createElement("small"); s2.textContent = tAbbr(q.a);
+      $("#focus").appendChild(s2);
+    }
+    order = shuffle([{v:q.c, ok:true}].concat(q.o.map(function(i){ return {v:i, ok:false}; })));
+    order.forEach(function(o, i){ optsEl.appendChild(mkOpt(i, subName(o.v), o)); });
+  }
+}
+function mkOpt(i, label, o){
+  var b = document.createElement("button");
+  b.className = "opt"; b.type = "button";
+  var n = document.createElement("span"); n.className = "n"; n.textContent = String(i+1);
+  var t = document.createElement("span"); t.className = "t"; t.textContent = label;
+  b.appendChild(n); b.appendChild(t);
+  b.addEventListener("click", function(ev){ ev.stopPropagation(); answer(i); });
+  return b;
+}
+
+function answer(i){
+  if (answered) return;
+  answered = true;
+  $("#quiz").classList.add("answered");
+  var picked = order[i], correct = order.findIndex(function(o){ return o.ok; });
+  var btns = $("#opts").children;
+  // 正解は必ず光らせる。間違えたときに正解を探させない。
+  for (var j=0;j<btns.length;j++){
+    if (order[j].ok) btns[j].dataset.s = "ok";
+    else if (j === i) btns[j].dataset.s = "ng";
+    else btns[j].dataset.s = "dim";
+  }
+  var qi = session[pos];
+  if (picked.ok){
+    st.wrong = st.wrong.filter(function(x){ return x !== qi; });
+  } else {
+    if (st.wrong.indexOf(qi) < 0) st.wrong.push(qi);
+    misses.push({q:current, picked:picked.v});
+  }
+  if (st.done.indexOf(qi) < 0) st.done.push(qi);
+  save(st);
+  detail(picked, order[correct]);
+  $("#hint").textContent = "タップで次へ";
+}
+
+function card(cls, head, term, path, body){
+  var d = document.createElement("div"); d.className = "card " + cls;
+  var h = document.createElement("div"); h.className = "h"; h.textContent = head; d.appendChild(h);
+  var t = document.createElement("div"); t.className = "term"; t.textContent = term; d.appendChild(t);
+  var p = document.createElement("div"); p.className = "path"; p.textContent = path; d.appendChild(p);
+  if (body){ var b = document.createElement("div"); b.className = "body"; b.textContent = body; d.appendChild(b); }
+  return d;
+}
+function detail(picked, correct){
+  var el = $("#detail"); el.className = "on"; el.innerHTML = "";
+  var q = current;
+  if (q.k === "odd"){
+    el.appendChild(card("ok", "正解 — 属さない用語", tName(correct.v), pathOf(correct.v),
+                        TTEXT[tTopic(correct.v)] || ""));
+    if (!picked.ok){
+      el.appendChild(card("ng", "選んだ用語 — こちらは属している", tName(picked.v), pathOf(picked.v),
+                          TTEXT[tTopic(picked.v)] || ""));
+    }
+  } else {
+    var ti = q.a;
+    el.appendChild(card("ok", "正解", subName(correct.v),
+                        catOf(correct.v) + " › " + subName(correct.v) + " › " + TOPICS[tTopic(ti)],
+                        TTEXT[tTopic(ti)] || ""));
+    if (!picked.ok){
+      el.appendChild(card("ng", "選んだ分類", subName(picked.v),
+                          catOf(picked.v) + " › " + subName(picked.v), ""));
+    }
+  }
+}
+
+// ---- 次へ: 画面のどこをタップしても進む (スクロールとは区別する) ----
+var downY = null, moved = false;
+document.addEventListener("touchstart", function(e){
+  downY = e.touches[0].clientY; moved = false;
+}, {passive:true});
+document.addEventListener("touchmove", function(e){
+  if (downY !== null && Math.abs(e.touches[0].clientY - downY) > 12) moved = true;
+}, {passive:true});
+document.addEventListener("click", function(){
+  if (!answered) return;
+  if (moved){ moved = false; return; }
+  next();
+});
+function next(){
+  pos++;
+  if (pos >= session.length){ finish(); return; }
+  render();
+}
+function finish(){
+  $("#bar>i").style.width = "100%";
+  var el = $("#misslist"); el.innerHTML = "";
+  if (!misses.length){
+    var ok = document.createElement("div"); ok.className = "allok";
+    ok.textContent = "取りこぼしなし。";
+    el.appendChild(ok);
+  } else {
+    var lead = document.createElement("p"); lead.className = "sub";
+    lead.textContent = "次はここを見ておく（" + misses.length + " 件）";
+    el.appendChild(lead);
+    misses.forEach(function(m){
+      var d = document.createElement("div"); d.className = "miss";
+      var t = document.createElement("div"); t.className = "term";
+      var p = document.createElement("div"); p.className = "path";
+      if (m.q.k === "odd"){
+        t.textContent = tName(m.q.a);
+        p.textContent = pathOf(m.q.a) + " ／ 「" + subName(m.q.c) + "」ではない";
+      } else {
+        t.textContent = tName(m.q.a);
+        p.textContent = catOf(m.q.c) + " › " + subName(m.q.c);
+      }
+      d.appendChild(t); d.appendChild(p); el.appendChild(d);
+    });
+  }
+  show("end");
+}
+
+// ---- キーボード: 1〜4 で選択, スペースで次へ ----
+document.addEventListener("keydown", function(e){
+  if (!$("#quiz").classList.contains("on")) return;
+  if (e.key >= "1" && e.key <= "4"){
+    var i = parseInt(e.key, 10) - 1;
+    if (!answered && i < order.length){ e.preventDefault(); answer(i); }
+  } else if (e.key === " " || e.key === "Enter"){
+    if (answered){ e.preventDefault(); next(); }
+  }
+});
+
+syncStart();
+})();
+</script>

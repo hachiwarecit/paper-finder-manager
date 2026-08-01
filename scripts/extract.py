@@ -59,6 +59,8 @@ RE_MARKER = re.compile(r"^[①-⑳]\s*")
 RE_ROMAN = re.compile(r"^[（(][ⅰ-ⅹⅠ-Ⅹ]")
 # 略語展開: ABBR（Full Name：和訳）
 RE_ABBR = re.compile(r"^(.+?)（([^（）]*[A-Za-z][^（）]*)）$")
+# 和文どうしに挟まれた空白 (PDF の行折り返しの跡)
+RE_JP_GAP = re.compile(r"(?<=[ぁ-んァ-ヴ一-龥ー々〆]) +(?=[ぁ-んァ-ヴ一-龥ー々〆])")
 
 # PDF→Word 変換で本文側の文字が落ちた箇所の個別修正。
 # 原文の字面に戻すだけで、説明の追加や書き換えは行わない。
@@ -229,6 +231,10 @@ def clean_term(raw: str) -> tuple[str, str]:
     t = raw.strip().strip("・")
     t = RE_MARKER.sub("", t).strip()
     t = re.sub(r"\s+", " ", t)
+    # PDF の行折り返しで語の途中に空白が入っている ("ベンチマーキン グ")。
+    # 和文どうしに挟まれた空白だけを詰める。"パック 10 進数" のように
+    # 英数字が絡む空白は原文の表記なので触らない。
+    t = RE_JP_GAP.sub("", t)
     t = _balance_parens(t)
     t = CORRECTIONS.get(t, t)
     m = RE_ABBR.match(t)
