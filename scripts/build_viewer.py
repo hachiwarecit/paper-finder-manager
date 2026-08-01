@@ -24,7 +24,11 @@ def main() -> int:
     ap.add_argument("--template", default="scripts/viewer_template.html", type=Path)
     ap.add_argument("--quiz", default="data/quiz.json", type=Path)
     ap.add_argument("--output", default="dist/index.html", type=Path)
+    ap.add_argument("--pages", default="docs/index.html", type=Path,
+                    help="GitHub Pages 用の複製先。--pages '' で無効化")
     args = ap.parse_args()
+    if args.pages and str(args.pages) in ("", "."):
+        args.pages = None
 
     for p in (args.template, args.quiz):
         if not p.exists():
@@ -54,6 +58,14 @@ def main() -> int:
     args.output.write_text(html, encoding="utf-8")
     kb = args.output.stat().st_size / 1024
     print(f"出力: {args.output} ({kb:.0f} KB)")
+
+    # GitHub Pages は「ブランチ + フォルダ」方式ではルートか /docs しか選べない。
+    # dist/ は指定できないので、同じものを docs/ にも置く。
+    if args.pages:
+        args.pages.parent.mkdir(parents=True, exist_ok=True)
+        args.pages.write_text(html, encoding="utf-8")
+        print(f"      {args.pages} (GitHub Pages 用の同一ファイル)")
+
     print(f"  用語 {data['meta']['terms']} / 問題 {data['meta']['questions']}")
     print("  外部参照: なし")
     return 0

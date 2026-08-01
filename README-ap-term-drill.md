@@ -65,9 +65,14 @@ IPA シラバスの「内容」原文（項目単位の説明であり、用語�
 `https://` で配信されるので `localStorage` が確実に効き、復習キューが端末に残る。
 
 1. GitHub でリポジトリの **Settings → Pages** を開く
-2. Source を `Deploy from a branch`、Branch をこのブランチ、フォルダを `/dist` にする
-3. 数分後 `https://<ユーザー名>.github.io/<リポジトリ名>/` で開ける
-4. Safari / Chrome で「ホーム画面に追加」
+2. Source を `Deploy from a branch`
+3. Branch を `claude/applied-info-quiz-app-lc8riv`、フォルダを **`/docs`** にして Save
+4. 1〜2 分後 `https://hachiwarecit.github.io/paper-finder-manager/` で開ける
+5. Safari / Chrome で「ホーム画面に追加」
+
+> **`/dist` は選べない。** Pages のブランチ配信で指定できるフォルダはルート `/` か
+> `/docs` のみ。そのため `build_viewer.py` は同じ HTML を `docs/index.html` にも
+> 出力している。`dist/` はビルド成果物、`docs/` は Pages 配信用で、中身は同一。
 
 > リポジトリが public なら、この URL は誰でも開ける。気になるなら
 > リポジトリを private にする（Pages は有料プランが必要）か、iCloud / ドライブ経由にする。
