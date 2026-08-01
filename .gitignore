@@ -24,3 +24,7 @@ reports/download_safety_log.csv
 
 # OS
 .DS_Store
+
+# 元データ (IPA シラバス)。再配布を避けるためコミットしない。
+# README の手順で IPA から取得し input/ に置く。
+input/
