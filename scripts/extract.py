@@ -57,8 +57,10 @@ RE_CONTENT_END = re.compile(r"[。．]\s*$")
 RE_MARKER = re.compile(r"^[①-⑳]\s*")
 # (ⅰ)(ⅱ) … の手順列挙。これは「内容」側の構造で用語ではない。
 RE_ROMAN = re.compile(r"^[（(][ⅰ-ⅹⅠ-Ⅹ]")
-# 略語展開: ABBR（Full Name：和訳）
-RE_ABBR = re.compile(r"^(.+?)（([^（）]*[A-Za-z][^（）]*)）$")
+# 末尾の括弧を切り出す (中身の型は clean_term が判定する)
+RE_PAREN = re.compile(r"^(.+?)（([^（）]+)）$")
+# 列挙の区切り
+RE_ENUM_SEP = re.compile(r"[，、／/]")
 # 和文どうしに挟まれた空白 (PDF の行折り返しの跡)
 RE_JP_GAP = re.compile(r"(?<=[ぁ-んァ-ヴ一-龥ー々〆]) +(?=[ぁ-んァ-ヴ一-龥ー々〆])")
 
@@ -226,8 +228,19 @@ def _balance_parens(t: str) -> str:
     return t
 
 
-def clean_term(raw: str) -> tuple[str, str]:
-    """(term, abbr_full) を返す。原文の字面は保つ。"""
+def clean_term(raw: str) -> tuple[str, str, str, str, list[str]]:
+    """(raw, head, abbr_full, gloss, members) を返す。
+
+    シラバスの用語例は、末尾の括弧に意味そのものを抱えていることがある。
+    これを型ごとに分けて取り出す。ここが 4 択の「意味を問う」問題の素になる。
+
+        BCD（Binary Coded Decimal：2 進化 10 進）  -> abbr_full
+        オーバーフロー（あふれ）                    -> gloss   (別名・言い換え)
+        回帰分析（単回帰分析，重回帰分析）           -> members (下位概念)
+
+    head は括弧を除いた見出し語。出題時に括弧の中身が見えていると答えが
+    そのまま露出するため、表示にはこちらを使う。raw は原文のまま残す。
+    """
     t = raw.strip().strip("・")
     t = RE_MARKER.sub("", t).strip()
     t = re.sub(r"\s+", " ", t)
@@ -237,14 +250,26 @@ def clean_term(raw: str) -> tuple[str, str]:
     t = RE_JP_GAP.sub("", t)
     t = _balance_parens(t)
     t = CORRECTIONS.get(t, t)
-    m = RE_ABBR.match(t)
-    if m:
-        head = m.group(1).strip()
-        inner = m.group(2).strip()
-        # 英字を含む括弧内のみ略語展開とみなす (「（あふれ）」等は別名なので残す)
-        if head and re.search(r"[A-Za-z]", inner):
-            return head, inner
-    return t, ""
+
+    m = RE_PAREN.match(t)
+    if not m:
+        return t, t, "", "", []
+    head, inner = m.group(1).strip(), m.group(2).strip()
+    if not head:
+        return t, t, "", "", []
+
+    # 列挙かどうかを先に見る。「活性化関数（ReLU 関数，ソフトマックス関数…）」は
+    # 英字を含むが略語展開ではなく下位概念の列挙なので、順序を逆にすると誤判定する。
+    if RE_ENUM_SEP.search(inner):
+        members = [x.strip() for x in RE_ENUM_SEP.split(inner) if x.strip()]
+        members = [x for x in members if x not in ("など", "ほか")]
+        if len(members) >= 2:
+            return t, head, "", "", members
+    if re.search(r"[A-Za-z]", inner):
+        return t, head, inner, "", []
+    if 1 <= len(inner) <= 18:
+        return t, head, "", inner, []
+    return t, t, "", "", []
 
 
 def is_term_like(term: str) -> bool:
@@ -277,8 +302,11 @@ def is_term_like(term: str) -> bool:
 class Term:
     id: str
     term: str
+    raw: str
     reading: str
     abbr_full: str
+    gloss: str
+    members: list
     category: str
     subcategory: str
     description: str
@@ -335,15 +363,18 @@ def extract(paragraphs: list[tuple[str, str]], leaves: list[Leaf]):
         got = False
         for sub, group in pending:
             for raw in split_terms(group):
-                term_text, abbr = clean_term(raw)
+                raw_text, term_text, abbr, gloss, members = clean_term(raw)
                 if not is_term_like(term_text):
                     continue
                 terms.append(
                     Term(
                         id="",
                         term=term_text,
+                        raw=raw_text,
                         reading="",
                         abbr_full=abbr,
+                        gloss=gloss,
+                        members=members,
                         category=cur.category,
                         subcategory=cur.subcategory,
                         description="",

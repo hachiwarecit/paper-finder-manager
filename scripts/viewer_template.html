@@ -3,7 +3,7 @@
 <meta name="color-scheme" content="dark">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<title>応用情報 用語分類ドリル</title>
+<title>応用情報 用語ドリル</title>
 <style>
 :root{
   --bg:#0e1014; --surface:#171a21; --surface2:#1f232c; --line:#2a2f3a;
@@ -57,6 +57,21 @@ h1{font-size:19px;margin:4px 0 2px}
   min-height:38px;display:flex;align-items:center;
 }
 .chip[aria-pressed="true"]{background:#1d2b4a;border-color:var(--accent);color:#dbe6ff}
+
+.toggle{
+  display:flex;align-items:center;justify-content:space-between;gap:12px;
+  width:100%;min-height:var(--tap);border:1px solid var(--line);border-radius:12px;
+  background:var(--surface);color:var(--fg);padding:10px 12px;margin-bottom:8px;
+  text-align:left;cursor:pointer;font-size:14px;
+}
+.toggle b{display:block;font-weight:600}
+.toggle i{display:block;font-style:normal;font-size:11.5px;color:var(--muted);margin-top:2px}
+.toggle .sw{flex:none;width:40px;height:24px;border-radius:999px;background:var(--surface2);
+  border:1px solid var(--line);position:relative;transition:background .15s}
+.toggle .sw::after{content:"";position:absolute;top:2px;left:2px;width:18px;height:18px;
+  border-radius:50%;background:var(--muted);transition:transform .15s,background .15s}
+.toggle[aria-pressed="true"] .sw{background:#23407a;border-color:var(--accent)}
+.toggle[aria-pressed="true"] .sw::after{transform:translateX(16px);background:var(--accent)}
 
 /* ---- 出題画面: 上半分に問題, 下半分に選択肢 ---- */
 #quiz{padding:0}
@@ -118,6 +133,18 @@ h1{font-size:19px;margin:4px 0 2px}
   display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:5;overflow:hidden}
 #hint{text-align:center;font-size:11.5px;color:var(--muted);padding:6px 0 calc(8px + var(--sab))}
 
+/* ---- 想起フェーズ: 選択肢を伏せて、先に自力で思い出させる ---- */
+#optwrap{position:relative;flex:0 0 auto}
+#cover{
+  position:absolute;inset:0;z-index:2;display:none;
+  align-items:center;justify-content:center;flex-direction:column;gap:6px;
+  background:var(--bg);border-radius:12px;cursor:pointer;
+}
+#cover.on{display:flex}
+#cover b{font-size:15px;font-weight:600}
+#cover i{font-style:normal;font-size:12px;color:var(--muted)}
+#quiz.masked #opts{visibility:hidden}
+
 /* ---- 終了画面 ---- */
 #end{padding:16px;overflow-y:auto}
 #end h2{font-size:17px;margin:2px 0 12px}
@@ -136,12 +163,22 @@ h1{font-size:19px;margin:4px 0 2px}
 
   <!-- 開始画面 -->
   <section id="start" class="screen on">
-    <h1>応用情報 用語分類ドリル</h1>
+    <h1>応用情報 用語ドリル</h1>
     <p class="sub">IPA シラバス Ver.7.2 ／ <span id="nterms"></span> 語</p>
     <div class="note" id="disclaimer"></div>
 
     <button class="big primary" id="go">はじめる（10問）</button>
     <button class="big" id="goreview">復習のみ <span id="rcount"></span></button>
+
+    <div class="rowlabel"><span>出題の設定</span></div>
+    <button class="toggle" id="tRecall" aria-pressed="true">
+      <span><b>思い出してから選択肢を開く</b><i>選択肢を先に見ると「見覚え」で当ててしまう</i></span>
+      <span class="sw"></span>
+    </button>
+    <button class="toggle" id="tCat" aria-pressed="false">
+      <span><b>分類だけの問題も混ぜる</b><i>意味を問う問題は <span id="nmean"></span> 問。足りなければ有効に</i></span>
+      <span class="sw"></span>
+    </button>
 
     <div class="rowlabel">
       <span>出題範囲</span>
@@ -158,7 +195,10 @@ h1{font-size:19px;margin:4px 0 2px}
       <div id="focus"></div>
     </div>
     <div id="detail"></div>
-    <div id="opts"></div>
+    <div id="optwrap">
+      <div id="opts"></div>
+      <div id="cover"><b>思い出せた？</b><i>タップで選択肢を開く</i></div>
+    </div>
     <div id="hint"></div>
   </section>
 
@@ -176,48 +216,71 @@ h1{font-size:19px;margin:4px 0 2px}
 (function(){
 "use strict";
 var D = JSON.parse(document.getElementById("quizdata").textContent);
-var TERMS = D.terms_data, SUBS = D.subcategories, CATS = D.categories,
+var T = D.terms_data, SUBS = D.subcategories, CATS = D.categories,
     TOPICS = D.topics, TTEXT = D.topic_texts, QS = D.questions;
 var PER_SESSION = 10;
+// terms_data の列
+var NAME=0, SUB=1, TOPIC=2, ABBREV=3, FULL=4, GLOSS=5, MEMBERS=6, RAW=7;
+// FULL は略語の「意味」。英語のまま解けてしまうものは生成側で除いてある。
+// 間隔反復: 正解するたびに次に出るまでのセッション数を伸ばす
+var SPACING = [1, 2, 4, 8, 16];
+var MEANING = {abbr2full:1, term2gloss:1, gloss2term:1, members:1, term2member:1};
 
 // ---- 保存領域: localStorage が使えなければメモリで続行 (file:// 等) ----
 var mem = {}, useLS = false;
-try {
-  var k = "__t"; localStorage.setItem(k, "1"); localStorage.removeItem(k); useLS = true;
-} catch (e) { useLS = false; }
-var KEY = "ap-term-drill-v1";
+try { var k="__t"; localStorage.setItem(k,"1"); localStorage.removeItem(k); useLS = true; }
+catch (e) { useLS = false; }
+var KEY = "ap-term-drill-v2";
 function load(){
   try { var raw = useLS ? localStorage.getItem(KEY) : mem[KEY];
         return raw ? JSON.parse(raw) : null; } catch(e){ return null; }
 }
 function save(o){
   try { var s = JSON.stringify(o); if (useLS) localStorage.setItem(KEY, s); else mem[KEY] = s; }
-  catch(e){ mem[KEY] = JSON.stringify(o); }   // 容量超過などでも黙って続行
+  catch(e){ mem[KEY] = JSON.stringify(o); }
 }
-var st = load() || {wrong:[], done:[], cats:null};
-if (!Array.isArray(st.wrong)) st.wrong = [];
-if (!Array.isArray(st.done)) st.done = [];
+var st = load() || {};
+if (typeof st.n !== "number") st.n = 0;      // セッション通し番号
+if (!st.p || typeof st.p !== "object") st.p = {};  // qi -> [box, due]
+if (!st.cats) st.cats = null;
+if (typeof st.recall !== "boolean") st.recall = true;
+if (typeof st.withCat !== "boolean") st.withCat = false;
 
 var $ = function(s){ return document.querySelector(s); };
 function subName(i){ return SUBS[i][0]; }
 function catOf(i){ return CATS[SUBS[i][1]]; }
-function catIdxOfSub(i){ return SUBS[i][1]; }
-function tName(i){ return TERMS[i][0]; }
-function tSub(i){ return TERMS[i][1]; }
-function tTopic(i){ return TERMS[i][2]; }
-function tAbbr(i){ return TERMS[i][4]; }
-function qCat(q){ return catIdxOfSub(q.c); }
 function pathOf(ti){
-  return catOf(tSub(ti)) + " › " + subName(tSub(ti)) + " › " + TOPICS[tTopic(ti)];
+  return catOf(T[ti][SUB]) + " › " + subName(T[ti][SUB]) + " › " + TOPICS[T[ti][TOPIC]];
 }
+function qCat(q){ return SUBS[q.k === "cat" ? q.c : T[q.a][SUB]][1]; }
 function shuffle(a){
   for (var i=a.length-1;i>0;i--){ var j=Math.floor(Math.random()*(i+1)); var t=a[i];a[i]=a[j];a[j]=t; }
   return a;
 }
 
+// ---- 問題の見せ方 ----
+// stem は問いの型、focus は答えを含まない手掛かり、opt は選択肢の文字列。
+var FORM = {
+  abbr2full: {label:"略語 → 正式名称", stem:"これが表すものは？",
+              focus:function(i){ return T[i][ABBREV]; }, opt:function(i){ return T[i][FULL]; }},
+  term2gloss:{label:"用語 → 言い換え", stem:"別の呼び方は？",
+              focus:function(i){ return T[i][NAME]; },   opt:function(i){ return T[i][GLOSS]; }},
+  gloss2term:{label:"言い換え → 用語", stem:"こう呼ばれる用語は？",
+              focus:function(i){ return T[i][GLOSS]; },  opt:function(i){ return T[i][NAME]; }},
+  members:   {label:"下位概念 → 用語", stem:"これらをまとめた用語は？",
+              focus:function(i){ return T[i][MEMBERS].join("・"); }, opt:function(i){ return T[i][NAME]; }},
+  term2member:{label:"用語 → 下位概念", stem:"これに含まれるものは？",
+              focus:function(i){ return T[i][NAME]; },
+              // 毎回どの下位概念が出るかは変える。同じ組合せの丸暗記を避ける。
+              opt:function(i){ var m = T[i][MEMBERS]; return m[Math.floor(Math.random()*m.length)]; }},
+  cat:       {label:"分類", stem:"この用語はどの分類？",
+              focus:function(i){ return T[i][NAME]; },   opt:null}
+};
+
 // ---- 開始画面 ----
 $("#nterms").textContent = D.meta.terms.toLocaleString("ja-JP");
 $("#disclaimer").textContent = D.meta.note;
+$("#nmean").textContent = D.meta.meaning_questions.toLocaleString("ja-JP");
 
 var selected = {};
 CATS.forEach(function(_, i){ selected[i] = st.cats ? st.cats.indexOf(i) >= 0 : true; });
@@ -235,48 +298,81 @@ CATS.forEach(function(name, i){
 });
 function setAll(v){
   CATS.forEach(function(_, i){ selected[i] = v; });
-  Array.prototype.forEach.call(catsEl.children, function(b, i){
-    b.setAttribute("aria-pressed", String(v));
-  });
+  Array.prototype.forEach.call(catsEl.children, function(b){ b.setAttribute("aria-pressed", String(v)); });
   syncStart();
 }
 $("#all").addEventListener("click", function(){ setAll(true); });
 $("#none").addEventListener("click", function(){ setAll(false); });
 
+function bindToggle(sel, key){
+  var el = $(sel);
+  el.setAttribute("aria-pressed", String(!!st[key]));
+  el.addEventListener("click", function(){
+    st[key] = !st[key];
+    el.setAttribute("aria-pressed", String(!!st[key]));
+    save(st); syncStart();
+  });
+}
+bindToggle("#tRecall", "recall");
+bindToggle("#tCat", "withCat");
+
 function chosenCats(){
   return Object.keys(selected).filter(function(k){ return selected[k]; }).map(Number);
+}
+function inScope(q, cs){
+  if (!cs[qCat(q)]) return false;
+  return st.withCat || MEANING[q.k];
+}
+function catSet(){
+  var cs = {}; chosenCats().forEach(function(c){ cs[c] = 1; }); return cs;
+}
+function duePool(){
+  var cs = catSet(), out = [];
+  for (var key in st.p){
+    var qi = +key, rec = st.p[key];
+    if (!QS[qi] || rec[1] > st.n) continue;
+    if (!inScope(QS[qi], cs)) continue;
+    out.push(qi);
+  }
+  out.sort(function(a,b){ return st.p[a][1] - st.p[b][1] || st.p[a][0] - st.p[b][0]; });
+  return out;
 }
 function syncStart(){
   var n = chosenCats().length;
   $("#go").disabled = n === 0;
   $("#go").textContent = n === 0 ? "範囲を1つ以上選ぶ" : "はじめる（10問）";
-  var rq = reviewPool().length;
-  $("#rcount").textContent = rq ? "（" + rq + "）" : "（なし）";
-  $("#goreview").disabled = rq === 0;
-}
-function reviewPool(){
-  var cs = {}; chosenCats().forEach(function(c){ cs[c] = 1; });
-  return st.wrong.filter(function(qi){ return QS[qi] && cs[qCat(QS[qi])]; });
+  var d = duePool().length;
+  $("#rcount").textContent = d ? "（" + d + "）" : "（なし）";
+  $("#goreview").disabled = d === 0;
 }
 
-// ---- セッション組み立て ----
-var session = [], pos = 0, misses = [], answered = false, current = null, order = [];
+// ---- セッション組み立て: 復習期限が来たものを先に、残りを新規で埋める ----
+var session = [], pos = 0, misses = [], answered = false, revealed = false,
+    current = null, order = [];
 
 function buildSession(reviewOnly){
-  var cs = {}; chosenCats().forEach(function(c){ cs[c] = 1; });
-  var done = {}; st.done.forEach(function(i){ done[i] = 1; });
-  var review = reviewPool();
-  var out = review.slice(0, PER_SESSION);          // 間違えた問題を優先
+  var cs = catSet();
+  var out = duePool().slice(0, PER_SESSION);
   if (!reviewOnly && out.length < PER_SESSION){
-    var pool = [], seen = [];
+    var fresh = [];
     for (var i=0;i<QS.length;i++){
-      if (!cs[qCat(QS[i])]) continue;
-      if (out.indexOf(i) >= 0) continue;
-      (done[i] ? seen : pool).push(i);
+      if (st.p[i] !== undefined) continue;
+      if (!inScope(QS[i], cs)) continue;
+      fresh.push(i);
     }
-    shuffle(pool); shuffle(seen);
-    var rest = pool.concat(seen);                   // 未出題を先に
-    out = out.concat(rest.slice(0, PER_SESSION - out.length));
+    shuffle(fresh);
+    out = out.concat(fresh.slice(0, PER_SESSION - out.length));
+    if (out.length < PER_SESSION){
+      // 出し切ったら、期限前のものを期限が近い順に前借りする
+      var early = [];
+      for (var key in st.p){
+        var qi = +key;
+        if (out.indexOf(qi) >= 0 || !QS[qi] || !inScope(QS[qi], cs)) continue;
+        early.push(qi);
+      }
+      early.sort(function(a,b){ return st.p[a][1] - st.p[b][1]; });
+      out = out.concat(early.slice(0, PER_SESSION - out.length));
+    }
   }
   return shuffle(out);
 }
@@ -286,126 +382,132 @@ function show(id){
 }
 function startSession(reviewOnly){
   session = buildSession(reviewOnly);
-  if (!session.length){ return; }
+  if (!session.length) return;
   st.cats = chosenCats(); save(st);
   pos = 0; misses = [];
   show("quiz"); render();
 }
-$("#go").addEventListener("click", function(){ startSession(false); });
-$("#goreview").addEventListener("click", function(){ startSession(true); });
-$("#again").addEventListener("click", function(){ startSession(false); });
-$("#back").addEventListener("click", function(){ syncStart(); show("start"); });
+// stopPropagation しないと、このクリックが document まで上がって
+// 出題直後の想起フェーズをその場で開いてしまう。
+$("#go").addEventListener("click", function(e){ e.stopPropagation(); startSession(false); });
+$("#goreview").addEventListener("click", function(e){ e.stopPropagation(); startSession(true); });
+$("#again").addEventListener("click", function(e){ e.stopPropagation(); startSession(false); });
+$("#back").addEventListener("click", function(e){ e.stopPropagation(); syncStart(); show("start"); });
 
 // ---- 出題 ----
 function render(){
   answered = false; current = QS[session[pos]];
+  var q = current, form = FORM[q.k];
   $("#quiz").classList.remove("answered");
   $("#bar>i").style.width = (pos / PER_SESSION * 100) + "%";
   $("#detail").className = ""; $("#detail").innerHTML = "";
-  $("#hint").textContent = "";
 
-  var q = current, optsEl = $("#opts");
-  optsEl.innerHTML = "";
+  $("#kind").textContent = form.label;
+  $("#stem").textContent = form.stem;
+  $("#focus").textContent = form.focus(q.a);
 
-  if (q.k === "odd"){
-    $("#kind").textContent = "仲間はずれ";
-    $("#stem").textContent = "次のうち、この分類に属さない用語は？";
-    $("#focus").innerHTML = "";
-    $("#focus").appendChild(document.createTextNode(subName(q.c)));
-    var s = document.createElement("small"); s.textContent = catOf(q.c);
-    $("#focus").appendChild(s);
-    order = shuffle([{v:q.a, ok:true}].concat(q.o.map(function(i){ return {v:i, ok:false}; })));
-    order.forEach(function(o, i){ optsEl.appendChild(mkOpt(i, tName(o.v), o)); });
-  } else {
-    $("#kind").textContent = "分類当て";
-    $("#stem").textContent = "この用語はどの分類？";
-    $("#focus").innerHTML = "";
-    $("#focus").appendChild(document.createTextNode(tName(q.a)));
-    if (tAbbr(q.a)){
-      var s2 = document.createElement("small"); s2.textContent = tAbbr(q.a);
-      $("#focus").appendChild(s2);
-    }
+  if (q.k === "cat"){
     order = shuffle([{v:q.c, ok:true}].concat(q.o.map(function(i){ return {v:i, ok:false}; })));
-    order.forEach(function(o, i){ optsEl.appendChild(mkOpt(i, subName(o.v), o)); });
+    fill(order.map(function(o){ return subName(o.v); }));
+  } else {
+    order = shuffle([{v:q.a, ok:true}].concat(q.o.map(function(i){ return {v:i, ok:false}; })));
+    fill(order.map(function(o){ return form.opt(o.v); }));
   }
+
+  // 想起フェーズ: 選択肢を伏せる。先に自分で答えを作らせるため。
+  revealed = !st.recall;
+  $("#quiz").classList.toggle("masked", !revealed);
+  $("#cover").classList.toggle("on", !revealed);
+  $("#hint").textContent = revealed ? "" : "";
 }
-function mkOpt(i, label, o){
-  var b = document.createElement("button");
-  b.className = "opt"; b.type = "button";
-  var n = document.createElement("span"); n.className = "n"; n.textContent = String(i+1);
-  var t = document.createElement("span"); t.className = "t"; t.textContent = label;
-  b.appendChild(n); b.appendChild(t);
-  b.addEventListener("click", function(ev){ ev.stopPropagation(); answer(i); });
-  return b;
+function fill(labels){
+  var el = $("#opts"); el.innerHTML = "";
+  labels.forEach(function(text, i){
+    var b = document.createElement("button");
+    b.className = "opt"; b.type = "button";
+    var n = document.createElement("span"); n.className = "n"; n.textContent = String(i+1);
+    var t = document.createElement("span"); t.className = "t"; t.textContent = text;
+    b.appendChild(n); b.appendChild(t);
+    b.addEventListener("click", function(ev){ ev.stopPropagation(); answer(i); });
+    el.appendChild(b);
+  });
 }
+function reveal(){
+  if (revealed) return;
+  revealed = true;
+  $("#quiz").classList.remove("masked");
+  $("#cover").classList.remove("on");
+}
+$("#cover").addEventListener("click", function(ev){ ev.stopPropagation(); reveal(); });
 
 function answer(i){
-  if (answered) return;
+  if (answered || !revealed) return;
   answered = true;
   $("#quiz").classList.add("answered");
-  var picked = order[i], correct = order.findIndex(function(o){ return o.ok; });
+  var picked = order[i], correct = null;
   var btns = $("#opts").children;
-  // 正解は必ず光らせる。間違えたときに正解を探させない。
-  for (var j=0;j<btns.length;j++){
-    if (order[j].ok) btns[j].dataset.s = "ok";
+  for (var j=0;j<order.length;j++){
+    if (order[j].ok){ correct = order[j]; btns[j].dataset.s = "ok"; }
     else if (j === i) btns[j].dataset.s = "ng";
     else btns[j].dataset.s = "dim";
   }
-  var qi = session[pos];
+  // 間隔反復: 正解で間隔を伸ばし、誤答で最初に戻す
+  var qi = session[pos], rec = st.p[qi] || [0, st.n];
   if (picked.ok){
-    st.wrong = st.wrong.filter(function(x){ return x !== qi; });
+    rec = [Math.min(rec[0] + 1, SPACING.length - 1), 0];
+    rec[1] = st.n + SPACING[rec[0]];
   } else {
-    if (st.wrong.indexOf(qi) < 0) st.wrong.push(qi);
+    rec = [0, st.n + 1];
     misses.push({q:current, picked:picked.v});
   }
-  if (st.done.indexOf(qi) < 0) st.done.push(qi);
-  save(st);
-  detail(picked, order[correct]);
+  st.p[qi] = rec; save(st);
+  detail(picked, correct);
   $("#hint").textContent = "タップで次へ";
 }
 
-function card(cls, head, term, path, body){
+function card(cls, head, title, path, body){
   var d = document.createElement("div"); d.className = "card " + cls;
   var h = document.createElement("div"); h.className = "h"; h.textContent = head; d.appendChild(h);
-  var t = document.createElement("div"); t.className = "term"; t.textContent = term; d.appendChild(t);
-  var p = document.createElement("div"); p.className = "path"; p.textContent = path; d.appendChild(p);
+  var t = document.createElement("div"); t.className = "term"; t.textContent = title; d.appendChild(t);
+  if (path){ var p = document.createElement("div"); p.className = "path"; p.textContent = path; d.appendChild(p); }
   if (body){ var b = document.createElement("div"); b.className = "body"; b.textContent = body; d.appendChild(b); }
   return d;
 }
+// 用語そのものを示す一行 (原文の括弧つき表記をそのまま見せる)
+function termLine(ti){ return T[ti][RAW] || T[ti][NAME]; }
+
 function detail(picked, correct){
   var el = $("#detail"); el.className = "on"; el.innerHTML = "";
   var q = current;
-  if (q.k === "odd"){
-    el.appendChild(card("ok", "正解 — 属さない用語", tName(correct.v), pathOf(correct.v),
-                        TTEXT[tTopic(correct.v)] || ""));
-    if (!picked.ok){
-      el.appendChild(card("ng", "選んだ用語 — こちらは属している", tName(picked.v), pathOf(picked.v),
-                          TTEXT[tTopic(picked.v)] || ""));
-    }
-  } else {
-    var ti = q.a;
+  if (q.k === "cat"){
     el.appendChild(card("ok", "正解", subName(correct.v),
-                        catOf(correct.v) + " › " + subName(correct.v) + " › " + TOPICS[tTopic(ti)],
-                        TTEXT[tTopic(ti)] || ""));
+      catOf(correct.v) + " › " + subName(correct.v) + " › " + TOPICS[T[q.a][TOPIC]],
+      TTEXT[T[q.a][TOPIC]] || ""));
     if (!picked.ok){
       el.appendChild(card("ng", "選んだ分類", subName(picked.v),
-                          catOf(picked.v) + " › " + subName(picked.v), ""));
+        catOf(picked.v) + " › " + subName(picked.v), ""));
     }
+    return;
+  }
+  el.appendChild(card("ok", "正解", termLine(correct.v), pathOf(correct.v),
+                      TTEXT[T[correct.v][TOPIC]] || ""));
+  if (!picked.ok){
+    el.appendChild(card("ng", "選んだもの", termLine(picked.v), pathOf(picked.v),
+                        TTEXT[T[picked.v][TOPIC]] || ""));
   }
 }
 
 // ---- 次へ: 画面のどこをタップしても進む (スクロールとは区別する) ----
 var downY = null, moved = false;
-document.addEventListener("touchstart", function(e){
-  downY = e.touches[0].clientY; moved = false;
-}, {passive:true});
+document.addEventListener("touchstart", function(e){ downY = e.touches[0].clientY; moved = false; }, {passive:true});
 document.addEventListener("touchmove", function(e){
   if (downY !== null && Math.abs(e.touches[0].clientY - downY) > 12) moved = true;
 }, {passive:true});
 document.addEventListener("click", function(){
-  if (!answered) return;
   if (moved){ moved = false; return; }
-  next();
+  if (!$("#quiz").classList.contains("on")) return;
+  if (!revealed){ reveal(); return; }
+  if (answered) next();
 });
 function next(){
   pos++;
@@ -413,6 +515,7 @@ function next(){
   render();
 }
 function finish(){
+  st.n++; save(st);
   $("#bar>i").style.width = "100%";
   var el = $("#misslist"); el.innerHTML = "";
   if (!misses.length){
@@ -424,30 +527,29 @@ function finish(){
     lead.textContent = "次はここを見ておく（" + misses.length + " 件）";
     el.appendChild(lead);
     misses.forEach(function(m){
-      var d = document.createElement("div"); d.className = "miss";
+      var q = m.q, d = document.createElement("div"); d.className = "miss";
       var t = document.createElement("div"); t.className = "term";
       var p = document.createElement("div"); p.className = "path";
-      if (m.q.k === "odd"){
-        t.textContent = tName(m.q.a);
-        p.textContent = pathOf(m.q.a) + " ／ 「" + subName(m.q.c) + "」ではない";
-      } else {
-        t.textContent = tName(m.q.a);
-        p.textContent = catOf(m.q.c) + " › " + subName(m.q.c);
-      }
+      t.textContent = termLine(q.a);
+      p.textContent = q.k === "cat"
+        ? catOf(q.c) + " › " + subName(q.c)
+        : FORM[q.k].label + " ／ " + pathOf(q.a);
       d.appendChild(t); d.appendChild(p); el.appendChild(d);
     });
   }
   show("end");
 }
 
-// ---- キーボード: 1〜4 で選択, スペースで次へ ----
+// ---- キーボード: 1〜4 で選択, スペースで開く/次へ ----
 document.addEventListener("keydown", function(e){
   if (!$("#quiz").classList.contains("on")) return;
   if (e.key >= "1" && e.key <= "4"){
     var i = parseInt(e.key, 10) - 1;
-    if (!answered && i < order.length){ e.preventDefault(); answer(i); }
+    if (revealed && !answered && i < order.length){ e.preventDefault(); answer(i); }
   } else if (e.key === " " || e.key === "Enter"){
-    if (answered){ e.preventDefault(); next(); }
+    e.preventDefault();
+    if (!revealed) reveal();
+    else if (answered) next();
   }
 });
 
